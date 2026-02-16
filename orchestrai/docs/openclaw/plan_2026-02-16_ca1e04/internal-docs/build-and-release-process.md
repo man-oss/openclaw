@@ -2,885 +2,710 @@
 
 ## Overview
 
-OpenClaw uses a comprehensive build system based on **pnpm** for package management, **tsdown** for TypeScript compilation, and platform-specific scripts for desktop and mobile builds. The project supports multiple platforms: macOS (desktop and iOS), Android, Linux, and Windows, with automated CI/CD pipelines and release processes.
+OpenClaw uses a comprehensive build system based on Node.js/pnpm with multiple platform targets including desktop (macOS), mobile (iOS, Android), and container deployments. The build process is orchestrated through npm scripts defined in `package.json` with supporting shell scripts in the `scripts/` directory.
 
 ## Build System Architecture
 
-### Core Build Technologies
+### Core Build Tools
 
-- **Package Manager**: pnpm 10.23.0 (required)
-- **Node Version**: >=22.12.0 (required, see `package.json` engines)
-- **TypeScript Compiler**: tsdown for production builds
-- **Type Checking**: Native TypeScript 5.9.3
-- **Bundler**: rolldown 1.0.0-rc.4 for UI components
+- **TypeScript Compiler**: Primary build tool using TypeScript 5.9.3
+- **tsdown**: TypeScript bundler (v0.20.3) for creating distribution builds
+- **pnpm**: Package manager (v10.23.0) with workspace support
+- **Node.js**: Minimum version 22.12.0 required
 
-### Build Directory Structure
+### Build Configuration Files
 
-```
-openclaw/
-├── dist/                    # Compiled JavaScript output
-│   ├── index.js            # Main entry point
-│   ├── plugin-sdk/         # Plugin SDK compiled files
-│   └── protocol.schema.json # Generated protocol schema
-├── apps/
-│   ├── macos/              # macOS native app
-│   ├── ios/                # iOS native app
-│   └── android/            # Android native app
-├── scripts/                # Build and release scripts
-├── ui/                     # Web UI components
-└── openclaw.mjs           # CLI entry point
-```
+- `tsconfig.json`: Main TypeScript configuration
+- `tsconfig.plugin-sdk.dts.json`: Plugin SDK type definitions configuration
+- `package.json`: Build scripts and dependency definitions
+- `vitest.unit.config.ts`, `vitest.e2e.config.ts`, `vitest.live.config.ts`: Test configurations
 
-## Build Commands
+## Build Scripts
 
-### Primary Build Script
-
-**Location**: `package.json` scripts section
+### Primary Build Command
 
 ```bash
-# Full production build
 pnpm build
 ```
 
-**Build Pipeline** (`scripts.build`):
-```bash
-pnpm canvas:a2ui:bundle &&           # Bundle A2UI canvas components
-tsdown &&                            # Compile TypeScript to JavaScript
-pnpm build:plugin-sdk:dts &&        # Generate plugin SDK type definitions
-node --import tsx scripts/write-plugin-sdk-entry-dts.ts &&  # Write SDK entry types
-node --import tsx scripts/canvas-a2ui-copy.ts &&            # Copy canvas assets
-node --import tsx scripts/copy-hook-metadata.ts &&          # Copy hook metadata
-node --import tsx scripts/write-build-info.ts &&            # Generate build info
-node --import tsx scripts/write-cli-compat.ts               # Write CLI compatibility
+**Build Pipeline Sequence** (`package.json:70-71`):
+
+```json
+"build": "pnpm canvas:a2ui:bundle && tsdown && pnpm build:plugin-sdk:dts && node --import tsx scripts/write-plugin-sdk-entry-dts.ts && node --import tsx scripts/canvas-a2ui-copy.ts && node --import tsx scripts/copy-hook-metadata.ts && node --import tsx scripts/write-build-info.ts && node --import tsx scripts/write-cli-compat.ts"
 ```
 
-### Component Build Scripts
+**Build Steps**:
 
-#### Plugin SDK Type Definitions
+1. **Canvas A2UI Bundle** (`scripts/bundle-a2ui.sh`): Bundles adaptive UI components
+2. **tsdown**: Compiles TypeScript to JavaScript with bundling
+3. **Plugin SDK Types**: Generates type definitions for plugin developers
+4. **Entry Point Generation** (`scripts/write-plugin-sdk-entry-dts.ts`): Creates plugin SDK entry types
+5. **Canvas Copy** (`scripts/canvas-a2ui-copy.ts`): Copies canvas UI assets
+6. **Hook Metadata** (`scripts/copy-hook-metadata.ts`): Copies hook metadata for extensions
+7. **Build Info** (`scripts/write-build-info.ts`): Writes build metadata (version, commit, timestamp)
+8. **CLI Compatibility** (`scripts/write-cli-compat.ts`): Generates CLI compatibility layer
 
-**Script**: `scripts/build:plugin-sdk:dts`
-```bash
-tsc -p tsconfig.plugin-sdk.dts.json
+### Build Output Structure
+
+```
+dist/
+├── index.js                    # Main entry point
+├── plugin-sdk/                 # Plugin SDK exports
+│   ├── index.js
+│   ├── index.d.ts
+│   └── account-id.js
+├── protocol.schema.json        # Protocol schema
+└── [compiled modules]
 ```
 
-Generates TypeScript declaration files for the plugin SDK located at `dist/plugin-sdk/index.d.ts`.
-
-#### Canvas A2UI Bundling
-
-**Script**: `scripts/canvas:a2ui:bundle`
-**Implementation**: `scripts/bundle-a2ui.sh`
-
-Bundles the A2UI (Agent-to-UI) canvas components for web rendering.
-
-#### Build Metadata Generation
-
-**Script**: `scripts/write-build-info.ts`
-
-Generates build metadata including:
-- Git commit hash
-- Build timestamp
-- Version number (from `package.json`)
-
-**Output**: `dist/build-info.json`
-
-#### CLI Compatibility Layer
-
-**Script**: `scripts/write-cli-compat.ts`
-
-Generates CLI compatibility information for backward compatibility checks.
-
-### Development Build Commands
+### Development Build
 
 ```bash
-# Development mode with hot reload
 pnpm dev
-
-# Watch mode for continuous compilation
-pnpm gateway:watch
-
-# Development with environment variables
-OPENCLAW_SKIP_CHANNELS=1 pnpm dev
 ```
 
-**Implementation**: `scripts/run-node.mjs` and `scripts/watch-node.mjs`
+Runs development server using `scripts/run-node.mjs` with hot reload support.
 
-## Platform-Specific Builds
+### Watch Mode
 
-### macOS Desktop Application
+```bash
+pnpm gateway:watch
+```
 
-#### Package Creation
+Uses `scripts/watch-node.mjs` for continuous rebuild on file changes.
 
-**Script**: `scripts/package-mac-app.sh`
+## Cross-Platform Build Processes
+
+### macOS Application
+
+**Build macOS App** (`scripts/package-mac-app.sh`):
+
 ```bash
 pnpm mac:package
 ```
 
-**Key Steps** (from `scripts/package-mac-app.sh`):
-1. Builds Node.js application using `pnpm build`
-2. Creates `.app` bundle structure
-3. Copies compiled assets to `Contents/Resources`
-4. Sets executable permissions
-5. Generates `Info.plist` with version information
-
-#### Code Signing
-
-**Script**: `scripts/codesign-mac-app.sh`
-
-Signs the macOS application bundle with Apple Developer certificate:
-```bash
-# Environment variables required:
-# - APPLE_CERTIFICATE_ID: Developer certificate identifier
-# - APPLE_KEYCHAIN_PROFILE: Keychain profile name
-
-bash scripts/codesign-mac-app.sh dist/OpenClaw.app
-```
-
 **Process**:
-1. Signs all nested frameworks and libraries
-2. Signs the main application bundle
-3. Applies hardened runtime entitlements
-4. Verifies signature with `codesign --verify`
+1. Creates `.app` bundle structure
+2. Copies compiled Node.js application
+3. Packages native dependencies
+4. Generates app icon from assets
 
-#### Notarization
+**Code Signing** (`scripts/codesign-mac-app.sh`):
+- Signs all native binaries and frameworks
+- Signs the main application bundle
+- Validates code signature
 
-**Script**: `scripts/notarize-mac-artifact.sh`
+**DMG Creation** (`scripts/create-dmg.sh`):
+- Creates disk image for distribution
+- Sets custom background and icon layout
+- Configures drag-to-Applications alias
 
-Submits app to Apple notarization service:
-```bash
-# Environment variables required:
-# - APPLE_ID: Apple Developer account email
-# - APPLE_TEAM_ID: 10-character team identifier
-# - APPLE_APP_SPECIFIC_PASSWORD: App-specific password
+**Notarization** (`scripts/notarize-mac-artifact.sh`):
+- Submits to Apple notarization service
+- Waits for notarization completion
+- Staples notarization ticket
 
-bash scripts/notarize-mac-artifact.sh dist/OpenClaw.app
-```
-
-#### DMG Creation
-
-**Script**: `scripts/create-dmg.sh`
-
-Creates distributable disk image:
-```bash
-bash scripts/create-dmg.sh
-```
-
-**Output**: `dist/OpenClaw-{version}-universal.dmg`
-
-#### Distribution Packaging
-
-**Script**: `scripts/package-mac-dist.sh`
-
-Combines all macOS packaging steps:
-```bash
-bash scripts/package-mac-dist.sh
-```
-
-**Full Pipeline**:
-1. Builds application (`pnpm build`)
-2. Creates `.app` bundle
-3. Code signs the application
-4. Notarizes with Apple
-5. Creates DMG installer
-6. Generates update appcast (see `scripts/make_appcast.sh`)
-
-#### Development Commands
-
-```bash
-# Open macOS app
-pnpm mac:open
-
-# Build and run development version
-bash scripts/build-and-run-mac.sh
-
-# Restart macOS app during development
-pnpm mac:restart
-```
-
-**Script**: `scripts/restart-mac.sh` - Kills and relaunches the macOS app.
+**Appcast Generation** (`scripts/make_appcast.sh`):
+- Generates Sparkle framework update feed
+- Signs update metadata
+- Publishes to distribution server
 
 ### iOS Application
 
-#### Project Generation
-
-**Script**: `ios:gen` using XcodeGen
+**Build Commands**:
 
 ```bash
 # Generate Xcode project
 pnpm ios:gen
 
-# Open in Xcode
-pnpm ios:open
-```
-
-**Configuration**: `apps/ios/project.yml` (XcodeGen specification)
-
-#### Building
-
-```bash
-# Build for simulator
+# Build iOS app
 pnpm ios:build
 
 # Run on simulator
 pnpm ios:run
 ```
 
-**Environment Variables**:
-- `IOS_DEST`: Build destination (default: `platform=iOS Simulator,name=iPhone 17`)
-- `IOS_SIM`: Simulator name (default: `iPhone 17`)
+**Configuration**:
+- Uses `xcodegen` for project generation from YAML specs
+- Location: `apps/ios/`
+- Default simulator: iPhone 17 (configurable via `IOS_DEST` env var)
 
-**Implementation** (from `package.json`):
+**Swift Protocol Generation** (`scripts/protocol-gen-swift.ts`):
 ```bash
-xcodebuild -project OpenClaw.xcodeproj \
-  -scheme OpenClaw \
-  -destination "platform=iOS Simulator,name=iPhone 17" \
-  -configuration Debug build
+pnpm protocol:gen:swift
 ```
-
-#### Team ID Detection
-
-**Script**: `scripts/ios-team-id.sh`
-
-Detects Apple Developer Team ID from provisioning profiles or keychain.
+Generates Swift models from TypeScript protocol definitions at `apps/macos/Sources/OpenClawProtocol/GatewayModels.swift`
 
 ### Android Application
 
-#### Build Commands
+**Build Commands**:
 
 ```bash
 # Assemble debug APK
 pnpm android:assemble
 
-# Install to connected device
+# Install on connected device
 pnpm android:install
 
-# Build, install, and run
+# Build, install, and launch
 pnpm android:run
 
 # Run unit tests
 pnpm android:test
 ```
 
-**Implementation**:
-- **Build System**: Gradle (via `apps/android/gradlew`)
-- **Output**: `apps/android/app/build/outputs/apk/debug/app-debug.apk`
-
-**Run Command** (from `package.json`):
-```bash
-cd apps/android && \
-  ./gradlew :app:installDebug && \
-  adb shell am start -n ai.openclaw.android/.MainActivity
-```
-
-## Protocol Generation
-
-### TypeScript Protocol Schema
-
-**Script**: `scripts/protocol-gen.ts`
-```bash
-pnpm protocol:gen
-```
-
-**Output**: `dist/protocol.schema.json`
-
-Generates JSON schema for the gateway protocol used in cross-platform communication.
-
-### Swift Protocol Models
-
-**Script**: `scripts/protocol-gen-swift.ts`
-```bash
-pnpm protocol:gen:swift
-```
-
-**Output**: `apps/macos/Sources/OpenClawProtocol/GatewayModels.swift`
-
-Generates Swift model classes from TypeScript protocol definitions for iOS/macOS apps.
-
-### Protocol Verification
-
-```bash
-# Verify protocol sync across platforms
-pnpm protocol:check
-```
-
-Ensures protocol definitions are synchronized between TypeScript and Swift implementations.
-
-## UI Build System
-
-### UI Build Scripts
-
-**Script**: `scripts/ui.js`
-
-```bash
-# Install UI dependencies
-pnpm ui:install
-
-# Build production UI
-pnpm ui:build
-
-# Development mode with hot reload
-pnpm ui:dev
-
-# Run UI tests
-pnpm ui:test
-```
-
-**UI Technologies**:
-- **Framework**: Lit 3.3.2 (web components)
-- **Context**: @lit/context 1.1.6
-- **Signals**: @lit-labs/signals 0.2.0
+**Configuration**:
+- Gradle-based build system
+- Location: `apps/android/`
+- Debug APK output: `apps/android/app/build/outputs/apk/debug/`
 
 ## CI/CD Pipeline
 
 ### GitHub Actions Workflows
 
-**Location**: `.github/workflows/`
-
-The repository uses GitHub Actions for automated testing and deployment.
+Located in `.github/workflows/` directory with supporting custom actions in `.github/actions/`.
 
 ### Workflow Configuration
 
-**Actionlint Configuration**: `.github/actionlint.yaml`
+**Dependabot** (`.github/dependabot.yml`):
+- Automated dependency updates
+- Configured for npm, GitHub Actions, and Docker ecosystems
+- Weekly update schedule with grouped updates
 
-Validates GitHub Actions workflow files with custom rules:
-```yaml
-self-hosted-runner:
-  labels:
-    - ubuntu-latest
-    - macos-latest
-    - windows-latest
-```
+**PR Labeler** (`.github/labeler.yml`):
+- Automatically labels PRs based on changed files
+- 7,017 bytes of path-based labeling rules
 
-### Custom GitHub Actions
+**Action Linting** (`.github/actionlint.yaml`):
+- Validates GitHub Actions workflow syntax
+- Enforces best practices for CI/CD definitions
 
-**Location**: `.github/actions/`
+### PR Workflow
 
-Contains reusable composite actions for common CI tasks.
+**PR Template** (`.github/pull_request_template.md`):
+- Standardized PR description format
+- Checklist for code quality, tests, and documentation
 
-### Dependency Management
+**PR Automation Scripts**:
+- `scripts/pr`: Main PR management script (30,861 bytes)
+- `scripts/pr-merge`: Merge automation helper
+- `scripts/pr-prepare`: Pre-PR validation
+- `scripts/pr-review`: Code review helper
 
-**Dependabot Configuration**: `.github/dependabot.yml`
+## Testing and Quality Assurance
 
-Automated dependency updates for:
-- npm packages
-- GitHub Actions
-- Docker images (if applicable)
+### Test Suites
 
-**Settings**:
-- Update interval: weekly
-- Security updates: immediate
-- Grouped updates by ecosystem
-
-### PR Labeling
-
-**Configuration**: `.github/labeler.yml`
-
-Automatically applies labels to pull requests based on changed files (7,017 bytes of rules).
-
-## Testing Infrastructure
-
-### Test Execution
-
+**Unit Tests**:
 ```bash
-# Run all tests (parallelized)
 pnpm test
-
-# Run specific test suites
-pnpm test:fast        # Unit tests only
-pnpm test:e2e         # End-to-end tests
-pnpm test:live        # Live API tests (requires credentials)
-
-# Run all test suites
-pnpm test:all
 ```
+Runs parallel test suite using `scripts/test-parallel.mjs` with `vitest.unit.config.ts`.
 
-**Parallel Test Runner**: `scripts/test-parallel.mjs`
+**E2E Tests**:
+```bash
+pnpm test:e2e
+```
+End-to-end tests via `vitest.e2e.config.ts`.
 
-Executes test suites in parallel with configurable concurrency:
-- Supports VM-specific configurations
-- Handles test isolation
-- Aggregates results
+**Live API Tests**:
+```bash
+pnpm test:live
+```
+Tests against live API endpoints when `OPENCLAW_LIVE_TEST=1`.
 
-### Test Configurations
-
-**Vitest Configs**:
-- `vitest.unit.config.ts`: Unit tests
-- `vitest.e2e.config.ts`: End-to-end tests
-- `vitest.live.config.ts`: Live integration tests
-
-### Coverage Reports
-
+**Coverage Report**:
 ```bash
 pnpm test:coverage
 ```
-
-Generates coverage reports using `@vitest/coverage-v8`.
+Generates coverage report using Vitest with V8 provider.
 
 ### Docker-Based Testing
 
+**Complete Docker Test Suite**:
 ```bash
-# Run all Docker tests
 pnpm test:docker:all
-
-# Individual Docker test suites
-pnpm test:docker:live-models      # Live model testing
-pnpm test:docker:live-gateway     # Gateway integration
-pnpm test:docker:onboard          # Onboarding flow
-pnpm test:docker:gateway-network  # Network testing
-pnpm test:docker:qr               # QR code import
-pnpm test:docker:doctor-switch    # Doctor mode switching
-pnpm test:docker:plugins          # Plugin system
-pnpm test:docker:cleanup          # Cleanup test artifacts
 ```
 
-**Scripts Location**: `scripts/e2e/*.sh` and `scripts/test-*-docker.sh`
+**Individual Docker Tests**:
+- `test:docker:live-models` (`scripts/test-live-models-docker.sh`): Live model API tests
+- `test:docker:live-gateway` (`scripts/test-live-gateway-models-docker.sh`): Gateway integration tests
+- `test:docker:onboard` (`scripts/e2e/onboard-docker.sh`): Onboarding flow tests
+- `test:docker:gateway-network` (`scripts/e2e/gateway-network-docker.sh`): Network tests
+- `test:docker:qr` (`scripts/e2e/qr-import-docker.sh`): QR code import tests
+- `test:docker:doctor-switch` (`scripts/e2e/doctor-install-switch-docker.sh`): Install switch tests
+- `test:docker:plugins` (`scripts/e2e/plugins-docker.sh`): Plugin system tests
+- `test:docker:cleanup` (`scripts/test-cleanup-docker.sh`): Cleanup test artifacts
 
 ### Installation Testing
 
+**Smoke Test**:
 ```bash
-# Test installation script
-pnpm test:install:smoke    # Basic smoke test
-pnpm test:install:e2e      # Full E2E installation test
+pnpm test:install:smoke
+```
+Basic installation verification via `scripts/test-install-sh-docker.sh`.
 
-# Provider-specific tests
-pnpm test:install:e2e:anthropic
-pnpm test:install:e2e:openai
+**E2E Installation Test**:
+```bash
+pnpm test:install:e2e
+```
+Full installation flow test via `scripts/test-install-sh-e2e-docker.sh`.
+
+**Provider-Specific Tests**:
+```bash
+pnpm test:install:e2e:anthropic  # Anthropic models
+pnpm test:install:e2e:openai     # OpenAI models
 ```
 
-**Implementation**:
-- `scripts/test-install-sh-docker.sh`: Basic installation verification
-- `scripts/test-install-sh-e2e-docker.sh`: Full E2E installation flow
+## Code Quality Tools
 
-### Performance Testing
+### Linting
 
-**Slowest Tests Analysis**: `scripts/vitest-slowest.mjs`
+**Primary Linter** (`oxlint`):
+```bash
+pnpm lint              # Type-aware linting
+pnpm lint:fix          # Auto-fix issues
+```
 
-Identifies slowest test cases for optimization.
+**Swift Linting**:
+```bash
+pnpm lint:swift        # SwiftLint for iOS/macOS
+```
 
-## Version Management
+**All Platform Linting**:
+```bash
+pnpm lint:all
+```
 
-### Version Format
+**Documentation Linting**:
+```bash
+pnpm lint:docs         # markdownlint-cli2
+pnpm lint:docs:fix     # Auto-fix markdown
+pnpm docs:check-links  # Validate hyperlinks
+```
 
-**Current Version**: `2026.2.16` (from `package.json`)
+### Formatting
 
-**Format**: `YYYY.M.D` (Calendar Versioning)
-- Year: 2026
-- Month: 2
-- Day: 16
+**Code Formatting** (`oxfmt`):
+```bash
+pnpm format            # Format TypeScript/JavaScript
+pnpm format:check      # Check formatting without changes
+```
 
-### Release Verification
+**Swift Formatting** (`swiftformat`):
+```bash
+pnpm format:swift      # Format Swift code
+```
 
-**Script**: `scripts/release-check.ts`
+**All Platform Formatting**:
+```bash
+pnpm format:all
+```
+
+**Documentation Formatting**:
+```bash
+pnpm format:docs       # Format markdown files
+pnpm format:docs:check # Check markdown formatting
+```
+
+### Additional Quality Checks
+
+**Lines of Code Check** (`scripts/check-ts-max-loc.ts`):
+```bash
+pnpm check:loc
+```
+Enforces maximum 500 lines per TypeScript file.
+
+**Combined Check**:
+```bash
+pnpm check             # Format check + type check + lint
+pnpm check:docs        # All documentation checks
+```
+
+## Release Process
+
+### Version Management
+
+**Version Format**: `YYYY.M.D` (CalVer with year, month, day)
+- Example: `2026.2.16`
+- Defined in `package.json:3`
+
+### Release Validation
+
+**Pre-release Check** (`scripts/release-check.ts`):
 ```bash
 pnpm release:check
 ```
 
-**Checks**:
-1. Version consistency across `package.json` and platform manifests
-2. CHANGELOG.md updates
-3. Git tag existence
-4. Build artifact integrity
+**Validation Steps**:
+1. Verifies version format matches CalVer
+2. Checks CHANGELOG.md has entry for current version
+3. Validates git tag doesn't already exist
+4. Ensures working directory is clean
+5. Confirms on main/master branch
+
+### Protocol Compatibility
+
+**Protocol Check**:
+```bash
+pnpm protocol:check
+```
+
+**Process**:
+1. Regenerates protocol schema (`scripts/protocol-gen.ts`)
+2. Regenerates Swift protocol bindings (`scripts/protocol-gen-swift.ts`)
+3. Verifies no changes to:
+   - `dist/protocol.schema.json`
+   - `apps/macos/Sources/OpenClawProtocol/GatewayModels.swift`
 
 ### Plugin Version Synchronization
 
-**Script**: `scripts/sync-plugin-versions.ts`
+**Sync Plugin Versions** (`scripts/sync-plugin-versions.ts`):
 ```bash
 pnpm plugins:sync
 ```
+Ensures all plugin packages reference compatible SDK versions.
 
-Ensures plugin versions match core version across:
-- `extensions/*/package.json`
-- Plugin manifests
-- Documentation
+### Changelog Management
+
+**Changelog HTML Generation** (`scripts/changelog-to-html.sh`):
+Converts CHANGELOG.md to HTML for in-app display.
 
 ## Distribution and Packaging
 
-### Package Contents
+### Package Structure
 
-**Files Included** (from `package.json` files field):
-```
-CHANGELOG.md
-LICENSE
-openclaw.mjs          # CLI entry point
-README-header.png
-README.md
-assets/               # Static assets
-dist/                 # Compiled code
-docs/                 # Documentation
-extensions/           # Plugin extensions
-skills/               # AI skills
-```
-
-### NPM Package Configuration
-
-**Binary**: `openclaw` (points to `openclaw.mjs`)
-
-**Exports** (from `package.json`):
-```javascript
-{
-  ".": "./dist/index.js",
-  "./plugin-sdk": {
-    "types": "./dist/plugin-sdk/index.d.ts",
-    "default": "./dist/plugin-sdk/index.js"
-  },
-  "./plugin-sdk/account-id": {
-    "types": "./dist/plugin-sdk/account-id.d.ts",
-    "default": "./dist/plugin-sdk/account-id.js"
-  },
-  "./cli-entry": "./openclaw.mjs"
-}
+**Published Files** (`package.json:24-36`):
+```json
+"files": [
+  "CHANGELOG.md",
+  "LICENSE",
+  "openclaw.mjs",
+  "README-header.png",
+  "README.md",
+  "assets/",
+  "dist/",
+  "docs/",
+  "extensions/",
+  "skills/"
+]
 ```
 
-### Pre-pack Hook
+### Package Preparation
 
-**Script**: `prepack` (from `package.json`)
+**Pre-pack Hook**:
 ```bash
-pnpm build && pnpm ui:build
+pnpm prepack
 ```
+Runs full build and UI build before npm packaging.
 
-Runs before `npm pack` to ensure fresh builds.
+### Binary Distribution
 
-## Asset and Icon Management
+**CLI Entry Point**: `openclaw.mjs`
+- Installed as `openclaw` command via `package.json:20`
+- Uses Node.js shebang for direct execution
 
-### Icon Generation
+### Platform-Specific Packages
 
-**Script**: `scripts/build_icon.sh`
+**macOS**:
+- `.app` bundle with code signing
+- `.dmg` disk image for distribution
+- Sparkle appcast for auto-updates
 
-Generates platform-specific icons from source assets:
-- macOS: `.icns` format
-- iOS: `.xcassets` bundle
-- Android: Various `mipmap-*` densities
+**iOS**:
+- Xcode project generation
+- TestFlight distribution (manual)
 
-**Input**: High-resolution source image
-**Outputs**: Platform-specific icon files
+**Android**:
+- Debug APK for development
+- Release APK signing (manual)
 
-### Changelog Conversion
+## Container Deployment
 
-**Script**: `scripts/changelog-to-html.sh`
+### Podman Support
 
-Converts `CHANGELOG.md` to HTML for embedding in applications:
+**Run Script** (`scripts/run-openclaw-podman.sh`):
 ```bash
-bash scripts/changelog-to-html.sh
+bash scripts/run-openclaw-podman.sh
 ```
+7,207 bytes of container orchestration logic.
 
-**Output**: `dist/changelog.html`
+**Helper Scripts**:
+- `scripts/podman/`: Podman-specific utilities
+- `scripts/docker/`: Docker-specific utilities
 
-## Code Quality and Formatting
+### Sandbox Environments
 
-### Linting
+**Browser Sandbox**:
+- Setup: `scripts/sandbox-browser-setup.sh`
+- Entrypoint: `scripts/sandbox-browser-entrypoint.sh`
+- Common setup: `scripts/sandbox-common-setup.sh`
 
-```bash
-# Run linters
-pnpm lint              # TypeScript/JavaScript (oxlint)
-pnpm lint:swift        # Swift (SwiftLint)
-pnpm lint:docs         # Markdown (markdownlint)
-pnpm lint:all          # All linters
+**General Sandbox**:
+- Setup: `scripts/sandbox-setup.sh`
 
-# Auto-fix issues
-pnpm lint:fix          # Fix TS/JS issues
-pnpm lint:docs:fix     # Fix markdown issues
-```
+## Development Utilities
 
-**Configuration**:
-- **oxlint**: Type-aware linting with oxlint 1.47.0
-- **SwiftLint**: `.swiftlint.yml` configuration
-- **markdownlint**: `.markdownlint.json` rules
+### Build Monitoring
 
-### Formatting
+**Icon Builder** (`scripts/build_icon.sh`):
+Generates application icons from source assets for macOS.
 
-```bash
-# Format code
-pnpm format            # TypeScript/JavaScript (oxfmt)
-pnpm format:swift      # Swift (swiftformat)
-pnpm format:docs       # Documentation only
-pnpm format:all        # All code
+**Documentation Builder** (`scripts/build-docs-list.mjs`):
+Generates documentation index for quick reference.
 
-# Check formatting without changes
-pnpm format:check
-pnpm format:docs:check
-```
+### Developer Tools
 
-**Tools**:
-- **oxfmt** 0.32.0: Fast TypeScript/JavaScript formatter
-- **swiftformat**: Swift code formatter (`.swiftformat` config)
+**Auth Monitoring** (`scripts/auth-monitor.sh`):
+Monitors authentication system status during development.
 
-### Pre-commit Hooks
+**Log Analysis** (`scripts/clawlog.sh`):
+10,244 bytes of log parsing and analysis utilities.
 
-**Script**: `scripts/prepare` (from `package.json`)
+**Orphaned Process Recovery** (`scripts/recover-orphaned-processes.sh`):
+Cleans up orphaned development processes.
 
-Sets up Git hooks on `npm install`:
+**Mac Restart Helper** (`scripts/restart-mac.sh`):
+9,316 bytes of macOS app restart automation.
+
+### Model Benchmarking
+
+**Benchmark Script** (`scripts/bench-model.ts`):
+Performance testing for AI model integrations.
+
+### Code Generation
+
+**Protocol Generators**:
+- TypeScript: `scripts/protocol-gen.ts`
+- Swift: `scripts/protocol-gen-swift.ts`
+
+**Build Info Writer** (`scripts/write-build-info.ts`):
+Generates `build-info.json` with:
+- Version number
+- Git commit hash
+- Build timestamp
+- Build environment
+
+**CLI Compatibility Writer** (`scripts/write-cli-compat.ts`):
+Generates backward compatibility shims for CLI commands.
+
+## Pre-commit Hooks
+
+**Git Hooks Path**: `git-hooks/`
+- Configured via `package.json:101` prepare script
+- Hooks location: `scripts/pre-commit/`
+
+**Hook Installation**:
 ```bash
 git config core.hooksPath git-hooks
 ```
 
-**Hook Scripts**: `scripts/pre-commit/`
-
-### Code Metrics
-
-**Line of Code Check**: `scripts/check-ts-max-loc.ts`
-```bash
-pnpm check:loc
-```
-
-Enforces maximum 500 lines per TypeScript file.
-
-## Documentation Build System
-
-### Documentation Links
-
-```bash
-# Build documentation list
-pnpm docs:list
-pnpm docs:bin
-
-# Check documentation links
-pnpm docs:check-links
-
-# Verify all documentation
-pnpm check:docs
-```
-
-**Scripts**:
-- `scripts/docs-list.js`: Generates documentation index
-- `scripts/build-docs-list.mjs`: Builds documentation manifest
-- `scripts/docs-link-audit.mjs`: Validates all documentation links
-
-### Documentation Development
-
-```bash
-# Run local docs server
-pnpm docs:dev
-```
-
-Uses **Mintlify** for documentation hosting (see `docs/mint.json`).
-
-### Documentation Synchronization
-
-**Script**: `scripts/sync-moonshot-docs.ts`
-
-Synchronizes documentation with external Moonshot platform.
-
-## Cross-Platform Build Considerations
-
-### Node.js Native Modules
-
-**Peer Dependencies** (from `package.json`):
-```json
-{
-  "@napi-rs/canvas": "^0.1.89",
-  "node-llama-cpp": "3.15.1"
-}
-```
-
-**Build-Only Dependencies** (`pnpm.onlyBuiltDependencies`):
-```
-@lydell/node-pty
-@matrix-org/matrix-sdk-crypto-nodejs
-@napi-rs/canvas
-@whiskeysockets/baileys
-authenticate-pam
-esbuild
-node-llama-cpp
-protobufjs
-sharp
-```
-
-These require compilation during installation.
-
-### Platform-Specific Scripts
-
-**macOS/iOS**:
-- Shell scripts use `bash -lc` for login shell environment
-- Xcode project generation via XcodeGen
-- Code signing and notarization pipeline
-
-**Android**:
-- Gradle wrapper (`gradlew`) for builds
-- ADB integration for device deployment
-
-**Linux**:
-- Systemd service configuration (`scripts/systemd/`)
-- Podman/Docker container support (`scripts/podman/`, `scripts/docker/`)
-
-### Container Builds
-
-**Docker Scripts**:
-- `scripts/docker/*`: Docker build configurations
-- `scripts/podman/*`: Podman-specific scripts
-- `scripts/run-openclaw-podman.sh`: Podman execution wrapper
-
-**Sandbox Setup**:
-- `scripts/sandbox-setup.sh`: Basic sandbox environment
-- `scripts/sandbox-browser-setup.sh`: Browser sandbox
-- `scripts/sandbox-common-setup.sh`: Shared sandbox utilities
-
-## Development Utilities
-
-### Build and Run Shortcuts
-
-```bash
-# macOS development
-bash scripts/build-and-run-mac.sh
-
-# Node.js development with auto-reload
-pnpm dev
-
-# Gateway development (skip channels)
-pnpm gateway:dev
-pnpm gateway:dev:reset  # With database reset
-
-# TUI development
-pnpm tui:dev
-```
-
-### Monitoring and Debugging
-
-**Authentication Monitor**: `scripts/auth-monitor.sh`
-
-Monitors authentication state during development.
-
-**Claude Auth Status**: `scripts/claude-auth-status.sh`
-
-Checks Claude API authentication status and credentials.
-
-**Process Recovery**: `scripts/recover-orphaned-processes.sh`
-
-Cleans up orphaned processes from crashed development sessions.
-
-### Developer Tools
-
-**PR Management**: `scripts/pr`, `scripts/pr-merge`, `scripts/pr-prepare`, `scripts/pr-review`
-
-Command-line tools for pull request workflows.
-
-**Committer Tool**: `scripts/committer`
-
-Interactive commit message helper.
-
-**Clawlog**: `scripts/clawlog.sh`
-
-Formatted log viewing utility.
-
-## Security and Dependencies
-
-### Dependency Overrides
-
-**pnpm Overrides** (from `package.json`):
-```json
-{
-  "fast-xml-parser": "5.3.4",
-  "form-data": "2.5.4",
-  "qs": "6.14.2",
-  "@sinclair/typebox": "0.34.48",
-  "tar": "7.5.9",
-  "tough-cookie": "4.1.3"
-}
-```
-
-Applied for security patches and compatibility.
-
-### Minimum Release Age
-
-**pnpm Configuration**:
-```json
-{
-  "minimumReleaseAge": 2880  // 48 hours in minutes
-}
-```
-
-Prevents installation of packages released within 48 hours (supply chain attack mitigation).
-
 ## Environment Configuration
 
-### Required Environment Variables
+### Build-Time Variables
 
-**macOS Signing and Notarization**:
-- `APPLE_CERTIFICATE_ID`: Code signing certificate
-- `APPLE_KEYCHAIN_PROFILE`: Keychain profile name
-- `APPLE_ID`: Apple Developer account
-- `APPLE_TEAM_ID`: Developer team identifier
+**Required for macOS Notarization**:
+- `APPLE_ID`: Apple Developer account email
 - `APPLE_APP_SPECIFIC_PASSWORD`: App-specific password
+- `APPLE_TEAM_ID`: Developer team ID
 
-**Development**:
-- `OPENCLAW_SKIP_CHANNELS`: Skip channel initialization
-- `OPENCLAW_PROFILE`: Development profile selection
-- `OPENCLAW_LIVE_TEST`: Enable live API tests
-- `OPENCLAW_E2E_MODELS`: Model provider for E2E tests
+**Optional Build Flags**:
+- `OPENCLAW_SKIP_CHANNELS=1`: Skip channel integrations in build
+- `CLAWDBOT_SKIP_CHANNELS=1`: Skip Clawdbot channels
+- `OPENCLAW_PROFILE=dev`: Development profile mode
+- `IOS_DEST`: iOS simulator destination
+- `IOS_SIM`: iOS simulator name
 
-**Testing**:
-- `OPENCLAW_TEST_VM_FORKS`: Number of test forks (0 for serial)
-- `OPENCLAW_TEST_PROFILE`: Test execution profile
+### Runtime Variables
 
-### Configuration Files
+**Test Configuration**:
+- `OPENCLAW_LIVE_TEST=1`: Enable live API tests
+- `OPENCLAW_E2E_MODELS=provider`: Specify E2E model provider
+- `OPENCLAW_TEST_VM_FORKS=0`: Disable test forking (for CI)
+- `OPENCLAW_TEST_PROFILE=serial`: Serial test execution
 
-**Environment Loading**: Uses `dotenv` (version 17.3.1)
+## Performance Optimization
 
-**Config Locations**:
-- `.env`: Local environment variables (gitignored)
-- `.env.example`: Template for required variables
+### Parallel Testing
 
-## Maintenance Scripts
+**Test Parallelization** (`scripts/test-parallel.mjs`):
+13,230 bytes of parallel test orchestration with:
+- Worker pool management
+- Test sharding
+- Resource isolation
+- Progress reporting
 
-### Contributor Management
+### Slowest Test Detection
 
-**Update Contributors**: `scripts/update-clawtributors.ts`
+**Analysis Tool** (`scripts/vitest-slowest.mjs`):
+Identifies and reports slowest test cases for optimization.
 
-Updates contributor list from Git history and GitHub API.
+## Dependency Management
 
-**Contributor Mapping**: `scripts/clawtributors-map.json`
+### Package Manager Configuration
 
-Maps Git authors to canonical contributor identities.
+**pnpm Settings** (`package.json:129-149`):
+
+```json
+"pnpm": {
+  "minimumReleaseAge": 2880,
+  "overrides": {
+    "fast-xml-parser": "5.3.4",
+    "form-data": "2.5.4",
+    "qs": "6.14.2",
+    "@sinclair/typebox": "0.34.48",
+    "tar": "7.5.9",
+    "tough-cookie": "4.1.3"
+  },
+  "onlyBuiltDependencies": [
+    "@lydell/node-pty",
+    "@matrix-org/matrix-sdk-crypto-nodejs",
+    "@napi-rs/canvas",
+    "@whiskeysockets/baileys",
+    "authenticate-pam",
+    "esbuild",
+    "node-llama-cpp",
+    "protobufjs",
+    "sharp"
+  ]
+}
+```
+
+**Security Overrides**: Forces specific versions for known vulnerabilities
+**Build-Only Dependencies**: Limits native builds to essential packages
+**Minimum Release Age**: 48-hour delay before adopting new versions
+
+## Troubleshooting Build Issues
+
+### Common Build Failures
+
+**Native Module Issues**:
+- Ensure Node.js >= 22.12.0
+- Check native build tools (Python, C++ compiler)
+- Verify pnpm version 10.23.0
+
+**macOS Code Signing**:
+- Verify certificate in Keychain
+- Check provisioning profiles
+- Validate entitlements configuration
+
+**iOS Build Failures**:
+- Run `pnpm ios:gen` to regenerate project
+- Check Xcode version compatibility
+- Verify provisioning profiles
+
+**Android Build Issues**:
+- Ensure Android SDK installed
+- Check ANDROID_HOME environment variable
+- Verify Gradle daemon status
+
+### Debug Tools
+
+**Verbose Logging**:
+Add `--verbose` to pnpm commands for detailed output.
+
+**Build Cleanup**:
+```bash
+rm -rf node_modules dist
+pnpm install
+pnpm build
+```
+
+**Test Diagnostics**:
+```bash
+pnpm test:force        # Force re-run failed tests
+```
+
+## Contributor Workflow
 
 ### Label Management
 
-**Sync GitHub Labels**: `scripts/sync-labels.ts`
+**Issue Labeling** (`scripts/label-open-issues.ts`):
+24,099 bytes of automated issue labeling logic.
 
-Synchronizes issue and PR labels across repositories.
+**Label Synchronization** (`scripts/sync-labels.ts`):
+Syncs GitHub labels across repository.
 
-**Label Open Issues**: `scripts/label-open-issues.ts`
+### Contributor Recognition
 
-Automatically applies labels to open issues based on content analysis.
+**Clawtributors Update** (`scripts/update-clawtributors.ts`):
+Generates and updates contributor list with:
+- GitHub API integration
+- Avatar fetching
+- Contribution metrics
+- Mapping file: `scripts/clawtributors-map.json`
 
-## Release Checklist
+## Integration Testing
 
-1. **Version Update**
-   - Update `version` in `package.json`
-   - Run `pnpm plugins:sync` to sync plugin versions
-   - Update `CHANGELOG.md` with release notes
+### Shell Completion Testing
 
-2. **Pre-release Verification**
-   ```bash
-   pnpm release:check     # Verify release readiness
-   pnpm protocol:check    # Verify protocol sync
-   pnpm check             # Run all linters
-   pnpm test:all          # Run complete test suite
-   ```
+**Test Script** (`scripts/test-shell-completion.ts`):
+7,506 bytes of shell completion validation for bash/zsh.
 
-3. **Build All Platforms**
-   ```bash
-   pnpm build             # Core build
-   pnpm ui:build          # UI build
-   pnpm mac:package       # macOS package
-   pnpm ios:build         # iOS build
-   pnpm android:assemble  # Android build
-   ```
+### Force Testing
 
-4. **macOS Distribution**
-   ```bash
-   bash scripts/package-mac-dist.sh  # Full macOS pipeline
-   ```
+**Force Test Utility** (`scripts/test-force.ts`):
+Bypasses test caching to force re-execution.
 
-5. **Verification**
-   - Test macOS DMG installation
-   - Test iOS simulator deployment
-   - Test Android APK installation
-   - Verify protocol compatibility
+## Documentation Generation
 
-6. **Publish**
-   ```bash
-   npm publish            # Publish to NPM
-   ```
+### Documentation Scripts
 
-7. **Post-release**
-   - Create GitHub release with artifacts
-   - Update documentation
-   - Announce release
+**Documentation List** (`scripts/docs-list.js`):
+Generates structured documentation index.
+
+**Documentation Binary** (`scripts/build-docs-list.mjs`):
+Compiles documentation assets for bundling.
+
+**Link Auditing** (`scripts/docs-link-audit.mjs`):
+6,378 bytes of documentation link validation.
+
+### Internationalization
+
+**i18n Scripts**: `scripts/docs-i18n/`
+Documentation translation and localization tooling.
+
+## Mobile-Specific Tooling
+
+### iOS Team Management
+
+**Team ID Script** (`scripts/ios-team-id.sh`):
+Retrieves Apple Developer team ID for configuration.
+
+### Android Development
+
+**Build and Run** (`scripts/build-and-run-mac.sh`):
+533 bytes of macOS-specific Android build automation.
+
+## Monitoring and Diagnostics
+
+### Authentication Status
+
+**Claude Auth Status** (`scripts/claude-auth-status.sh`):
+8,632 bytes of authentication monitoring and diagnostics.
+
+**Auth System Setup** (`scripts/setup-auth-system.sh`):
+Initial authentication system configuration.
+
+### Mobile Auth Tools
+
+**Termux Scripts**:
+- `scripts/termux-auth-widget.sh`: Android widget authentication
+- `scripts/termux-quick-auth.sh`: Quick authentication helper
+- `scripts/termux-sync-widget.sh`: Sync widget for Android
+
+**Mobile Reauth** (`scripts/mobile-reauth.sh`):
+Handles mobile re-authentication flows.
+
+## Summary
+
+The OpenClaw build and release process is a sophisticated multi-platform system orchestrated through npm scripts with extensive automation for:
+
+- **Build**: TypeScript compilation, bundling, and asset processing
+- **Testing**: Parallel unit tests, E2E tests, Docker-based integration tests
+- **Quality**: Automated linting, formatting, and code quality checks
+- **Distribution**: Platform-specific packaging for macOS, iOS, and Android
+- **Release**: CalVer versioning with automated validation and protocol checks
+- **CI/CD**: GitHub Actions integration with automated PR management
+
+All build scripts are located in `scripts/` with primary orchestration through `package.json` npm scripts. The system supports development, testing, and production builds across multiple platforms with comprehensive quality assurance at each stage.

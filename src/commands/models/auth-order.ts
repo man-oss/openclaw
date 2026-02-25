@@ -109,10 +109,10 @@ export async function modelsAuthOrderSetCommand(
   for (const profileId of requested) {
     const cred = store.profiles[profileId];
     if (!cred) {
-      throw new Error(`Auth profile "${profileId}" not found in ${agentDir}.`);
+      throw new Error(`Auth profile "${profileId}" not found for the specified agent.`);
     }
     if (normalizeProviderId(cred.provider) !== providerKey) {
-      throw new Error(`Auth profile "${profileId}" is for ${cred.provider}, not ${provider}.`);
+      throw new Error(`Auth profile "${profileId}" does not match the requested provider.`);
     }
   }
 

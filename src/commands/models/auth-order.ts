@@ -39,6 +39,17 @@ function resolveAuthOrderContext(opts: { provider: string; agent?: string }) {
   return { cfg, agentId, agentDir, provider };
 }
 
+function obfuscateProfileId(profileId: string): string {
+  if (profileId.length <= 4) {
+    return "*".repeat(profileId.length);
+  }
+  return profileId.slice(0, 2) + "*".repeat(profileId.length - 4) + profileId.slice(-2);
+}
+
+function sanitizeOrder(order: string[]): string[] {
+  return order.map(obfuscateProfileId);
+}
+
 export async function modelsAuthOrderGetCommand(
   opts: { provider: string; agent?: string; json?: boolean },
   runtime: RuntimeEnv,
@@ -54,10 +65,8 @@ export async function modelsAuthOrderGetCommand(
       JSON.stringify(
         {
           agentId,
-          agentDir,
           provider,
-          authStorePath: shortenHomePath(`${agentDir}/auth-profiles.json`),
-          order: order.length > 0 ? order : null,
+          order: order.length > 0 ? sanitizeOrder(order) : null,
         },
         null,
         2,
@@ -68,8 +77,7 @@ export async function modelsAuthOrderGetCommand(
 
   runtime.log(`Agent: ${agentId}`);
   runtime.log(`Provider: ${provider}`);
-  runtime.log(`Auth file: ${shortenHomePath(`${agentDir}/auth-profiles.json`)}`);
-  runtime.log(order.length > 0 ? `Order override: ${order.join(", ")}` : "Order override: (none)");
+  runtime.log(order.length > 0 ? `Order override: ${sanitizeOrder(order).join(", ")}` : "Order override: (none)");
 }
 
 export async function modelsAuthOrderClearCommand(
@@ -109,10 +117,10 @@ export async function modelsAuthOrderSetCommand(
   for (const profileId of requested) {
     const cred = store.profiles[profileId];
     if (!cred) {
-      throw new Error(`Auth profile "${profileId}" not found in ${agentDir}.`);
+      throw new Error(`Auth profile not found for the given identifier.`);
     }
     if (normalizeProviderId(cred.provider) !== providerKey) {
-      throw new Error(`Auth profile "${profileId}" is for ${cred.provider}, not ${provider}.`);
+      throw new Error(`Auth profile provider mismatch: expected ${provider}.`);
     }
   }
 
@@ -127,5 +135,5 @@ export async function modelsAuthOrderSetCommand(
 
   runtime.log(`Agent: ${agentId}`);
   runtime.log(`Provider: ${provider}`);
-  runtime.log(`Order override: ${describeOrder(updated, provider).join(", ")}`);
+  runtime.log(`Order override: ${sanitizeOrder(describeOrder(updated, provider)).join(", ")}`);
 }

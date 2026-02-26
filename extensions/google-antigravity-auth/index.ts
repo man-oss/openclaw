@@ -8,12 +8,9 @@ import {
   type ProviderAuthContext,
 } from "openclaw/plugin-sdk";
 
-// OAuth constants - decoded from pi-ai's base64 encoded values to stay in sync
-const decode = (s: string) => Buffer.from(s, "base64").toString();
-const CLIENT_ID = decode(
-  "MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==",
-);
-const CLIENT_SECRET = decode("R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=");
+// OAuth constants - read from environment variables
+const CLIENT_ID = process.env.GOOGLE_ANTIGRAVITY_CLIENT_ID ?? "";
+const CLIENT_SECRET = process.env.GOOGLE_ANTIGRAVITY_CLIENT_SECRET ?? "";
 const REDIRECT_URI = "http://localhost:51121/oauth-callback";
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -291,6 +288,12 @@ async function loginAntigravity(params: {
   email?: string;
   projectId: string;
 }> {
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error(
+      "Missing required environment variables: GOOGLE_ANTIGRAVITY_CLIENT_ID and GOOGLE_ANTIGRAVITY_CLIENT_SECRET must be set.",
+    );
+  }
+
   const { verifier, challenge } = generatePkce();
   const state = randomBytes(16).toString("hex");
   const authUrl = buildAuthUrl({ challenge, state });

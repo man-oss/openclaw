@@ -21,7 +21,16 @@ data class DeviceIdentity(
 
 class DeviceIdentityStore(context: Context) {
   private val json = Json { ignoreUnknownKeys = true }
-  private val identityFile = File(context.filesDir, "openclaw/identity/device.json")
+  private val identityFile: File
+
+  init {
+    val identityDir = File(context.filesDir, "openclaw").apply { mkdirs() }
+    val candidate = File(identityDir, "device_identity.json").canonicalFile
+    require(candidate.canonicalPath.startsWith(context.filesDir.canonicalPath)) {
+      "Invalid identity file path"
+    }
+    identityFile = candidate
+  }
 
   @Synchronized
   fun loadOrCreate(): DeviceIdentity {

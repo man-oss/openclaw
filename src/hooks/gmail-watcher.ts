@@ -214,9 +214,7 @@ export async function stopGmailWatcher(): Promise<void> {
 
   if (watcherProcess) {
     log.info("stopping gmail watcher");
-    watcherProcess.kill("SIGTERM");
 
-    // Wait a bit for graceful shutdown
     await new Promise<void>((resolve) => {
       const timeout = setTimeout(() => {
         if (watcherProcess) {
@@ -229,6 +227,8 @@ export async function stopGmailWatcher(): Promise<void> {
         clearTimeout(timeout);
         resolve();
       });
+
+      watcherProcess!.kill("SIGTERM");
     });
 
     watcherProcess = null;

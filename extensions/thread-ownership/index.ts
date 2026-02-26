@@ -7,12 +7,9 @@ type ThreadOwnershipConfig = {
 
 type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[number];
 
-// In-memory set of {channel}:{thread} keys where this agent was @-mentioned.
-// Entries expire after 5 minutes.
-const mentionedThreads = new Map<string, number>();
 const MENTION_TTL_MS = 5 * 60 * 1000;
 
-function cleanExpiredMentions(): void {
+function cleanExpiredMentions(mentionedThreads: Map<string, number>): void {
   const now = Date.now();
   for (const [key, ts] of mentionedThreads) {
     if (now - ts > MENTION_TTL_MS) {
@@ -40,6 +37,8 @@ function resolveOwnershipAgent(config: OpenClawConfig): { id: string; name: stri
 }
 
 export default function register(api: OpenClawPluginApi) {
+  const mentionedThreads = new Map<string, number>();
+
   const pluginCfg = (api.pluginConfig ?? {}) as ThreadOwnershipConfig;
   const forwarderUrl = (
     pluginCfg.forwarderUrl ??
@@ -75,7 +74,7 @@ export default function register(api: OpenClawPluginApi) {
       (botUserId && text.includes(`<@${botUserId}>`));
 
     if (mentioned) {
-      cleanExpiredMentions();
+      cleanExpiredMentions(mentionedThreads);
       mentionedThreads.set(`${channelId}:${threadTs}`, Date.now());
     }
   });
@@ -97,7 +96,7 @@ export default function register(api: OpenClawPluginApi) {
     if (abTestChannels.size > 0 && !abTestChannels.has(channelId)) return;
 
     // If this agent was @-mentioned in this thread recently, skip ownership check.
-    cleanExpiredMentions();
+    cleanExpiredMentions(mentionedThreads);
     if (mentionedThreads.has(`${channelId}:${threadTs}`)) return;
 
     // Try to claim ownership via the forwarder HTTP API.

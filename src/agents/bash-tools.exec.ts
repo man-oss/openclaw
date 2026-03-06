@@ -118,6 +118,36 @@ export type ExecToolDetails =
       nodeId?: string;
     };
 
+const DANGEROUS_LOADER_VARS = new Set([
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "LD_AUDIT",
+  "LD_DEBUG",
+  "LD_ORIGIN_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_FRAMEWORK_PATH",
+  "DYLD_FALLBACK_LIBRARY_PATH",
+  "DYLD_FALLBACK_FRAMEWORK_PATH",
+  "DYLD_FORCE_FLAT_NAMESPACE",
+  "DYLD_IMAGE_SUFFIX",
+]);
+
+function validateSandboxEnv(env: Record<string, string>): void {
+  const blocked: string[] = [];
+  for (const key of Object.keys(env)) {
+    if (DANGEROUS_LOADER_VARS.has(key)) {
+      blocked.push(key);
+    }
+  }
+  if (blocked.length > 0) {
+    throw new Error(
+      `Sandbox env contains dangerous loader variable(s): ${blocked.join(", ")}. ` +
+        "These variables are not permitted as they could enable library injection attacks.",
+    );
+  }
+}
+
 export function createExecTool(
   defaults?: ExecToolDefaults,
   // oxlint-disable-next-line typescript/no-explicit-any
@@ -294,10 +324,14 @@ export function createExecTool(
 
       const baseEnv = coerceEnv(process.env);
 
-      // Logic: Sandbox gets raw env. Host (gateway/node) must pass validation.
-      // We validate BEFORE merging to prevent any dangerous vars from entering the stream.
-      if (host !== "sandbox" && params.env) {
-        validateHostEnv(params.env);
+      // Validate env vars for all execution hosts to prevent injection attacks.
+      // Sandbox gets loader-var-specific validation; host/gateway gets full validation.
+      if (params.env) {
+        if (host === "sandbox") {
+          validateSandboxEnv(params.env);
+        } else {
+          validateHostEnv(params.env);
+        }
       }
 
       const mergedEnv = params.env ? { ...baseEnv, ...params.env } : baseEnv;

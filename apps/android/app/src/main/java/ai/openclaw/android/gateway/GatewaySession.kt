@@ -31,6 +31,8 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 
+private const val AUDIT_TAG = "OpenClawAudit"
+
 data class GatewayClientInfo(
   val id: String,
   val displayName: String?,
@@ -106,6 +108,7 @@ class GatewaySession(
     options: GatewayConnectOptions,
     tls: GatewayTlsParams? = null,
   ) {
+    Log.i(AUDIT_TAG, "connect: initiating connection, role=${options.role}, clientId=${options.client.id}, endpoint=${endpoint.host}:${endpoint.port}, timestamp=${System.currentTimeMillis()}")
     desired = DesiredConnection(endpoint, token, password, options, tls)
     if (job == null) {
       job = scope.launch(Dispatchers.IO) { runLoop() }
@@ -113,6 +116,7 @@ class GatewaySession(
   }
 
   fun disconnect() {
+    Log.i(AUDIT_TAG, "disconnect: session disconnect requested, timestamp=${System.currentTimeMillis()}")
     desired = null
     currentConnection?.closeQuietly()
     scope.launch(Dispatchers.IO) {
@@ -120,11 +124,13 @@ class GatewaySession(
       job = null
       canvasHostUrl = null
       mainSessionKey = null
+      Log.i(AUDIT_TAG, "disconnect: session disconnected successfully, timestamp=${System.currentTimeMillis()}")
       onDisconnected("Offline")
     }
   }
 
   fun reconnect() {
+    Log.i(AUDIT_TAG, "reconnect: session reconnect requested, timestamp=${System.currentTimeMillis()}")
     currentConnection?.closeQuietly()
   }
 
@@ -299,6 +305,7 @@ class GatewaySession(
     private suspend fun sendConnect(connectNonce: String?) {
       val identity = identityStore.loadOrCreate()
       val storedToken = deviceAuthStore.loadToken(identity.deviceId, options.role)
+      Log.i(AUDIT_TAG, "Authentication attempt: deviceId=${identity.deviceId}, role=${options.role}, hasStoredToken=${!storedToken.isNullOrBlank()}, endpoint=$remoteAddress, timestamp=${System.currentTimeMillis()}")
       val trimmedToken = token?.trim().orEmpty()
       val authToken = if (storedToken.isNullOrBlank()) trimmedToken else storedToken
       val canFallbackToShared = !storedToken.isNullOrBlank() && trimmedToken.isNotBlank()
@@ -306,7 +313,9 @@ class GatewaySession(
       val res = request("connect", payload, timeoutMs = 8_000)
       if (!res.ok) {
         val msg = res.error?.message ?: "connect failed"
+        Log.i(AUDIT_TAG, "Authentication failed: deviceId=${identity.deviceId}, role=${options.role}, error=${res.error?.code ?: "UNKNOWN"}: $msg, fallbackToShared=$canFallbackToShared, timestamp=${System.currentTimeMillis()}")
         if (canFallbackToShared) {
+          Log.i(AUDIT_TAG, "Token cleared (fallback): deviceId=${identity.deviceId}, role=${options.role}, timestamp=${System.currentTimeMillis()}")
           deviceAuthStore.clearToken(identity.deviceId, options.role)
         }
         throw IllegalStateException(msg)
@@ -318,6 +327,7 @@ class GatewaySession(
       val deviceToken = authObj?.get("deviceToken").asStringOrNull()
       val authRole = authObj?.get("role").asStringOrNull() ?: options.role
       if (!deviceToken.isNullOrBlank()) {
+        Log.i(AUDIT_TAG, "Device token stored: deviceId=${identity.deviceId}, role=$authRole, timestamp=${System.currentTimeMillis()}")
         deviceAuthStore.saveToken(identity.deviceId, authRole, deviceToken)
       }
       val rawCanvas = obj["canvasHostUrl"].asStringOrNull()
@@ -326,6 +336,7 @@ class GatewaySession(
         obj["snapshot"].asObjectOrNull()
           ?.get("sessionDefaults").asObjectOrNull()
       mainSessionKey = sessionDefaults?.get("mainSessionKey").asStringOrNull()
+      Log.i(AUDIT_TAG, "Authentication success: deviceId=${identity.deviceId}, role=$authRole, serverName=$serverName, endpoint=$remoteAddress, timestamp=${System.currentTimeMillis()}")
       onConnected(serverName, remoteAddress, mainSessionKey)
       connectDeferred.complete(Unit)
     }
@@ -378,6 +389,7 @@ class GatewaySession(
         )
       val signature = identityStore.signPayload(payload, identity)
       val publicKey = identityStore.publicKeyBase64Url(identity)
+      Log.i(AUDIT_TAG, "Device credential signing: deviceId=${identity.deviceId}, hasSignature=${!signature.isNullOrBlank()}, hasPublicKey=${!publicKey.isNullOrBlank()}, authMethod=${if (authToken.isNotEmpty()) "token" else if (password.isNotEmpty()) "password" else "none"}, signedAt=$signedAtMs, timestamp=${System.currentTimeMillis()}")
       val deviceJson =
         if (!signature.isNullOrBlank() && !publicKey.isNullOrBlank()) {
           buildJsonObject {
@@ -695,10 +707,4 @@ private fun JsonElement?.asLongOrNull(): Long? =
 
 private fun parseJsonOrNull(payload: String): JsonElement? {
   val trimmed = payload.trim()
-  if (trimmed.isEmpty()) return null
-  return try {
-    Json.parseToJsonElement(trimmed)
-  } catch (_: Throwable) {
-    null
-  }
-}
+  if (trimmed.isEmpty())

@@ -1,451 +1,387 @@
-# Netdata Threat Model and Security Assessment
-
-**Repository:** `man-oss/netdata` (tracking upstream `netdata/netdata`)
-**Source References:** `docs/security-and-privacy-design/netdata-agent-security.md`, `docs/security-and-privacy-design/netdata-cloud-security.md`, `src/aclk/README.md`, `src/aclk/aclk.c`, `src/plugins.d/README.md`, `src/plugins.d/pluginsd_functions.c`
-**Audience:** Security engineers, compliance auditors, and threat modelers
-
 ---
 
 ## Table of Contents
 
-1. [Architecture Overview and Trust Boundary Map](#1-architecture-overview-and-trust-boundary-map)
+1. [Scope and Architecture Overview](#1-scope-and-architecture-overview)
 2. [Trust Boundaries](#2-trust-boundaries)
-3. [Data in Transit: Flows, Channels, and Protections](#3-data-in-transit-flows-channels-and-protections)
+3. [Data in Transit: Flows and Protections](#3-data-in-transit-flows-and-protections)
 4. [ACLK Threat Model](#4-aclk-threat-model)
-5. [Agent Access Control Threats](#5-agent-access-control-threats)
+5. [Agent API Access Control Threats](#5-agent-api-access-control-threats)
 6. [Supply Chain Risks: Plugin Execution Model](#6-supply-chain-risks-plugin-execution-model)
-7. [Cross-Cutting Security Controls](#7-cross-cutting-security-controls)
-8. [Threat Summary Table (STRIDE)](#8-threat-summary-table-stride)
-9. [Auditor Checklist](#9-auditor-checklist)
+7. [Threat Summary Matrix (STRIDE)](#7-threat-summary-matrix-stride)
+8. [Recommended Mitigations by Deployment Tier](#8-recommended-mitigations-by-deployment-tier)
 
 ---
 
-## 1. Architecture Overview and Trust Boundary Map
+## 1. Scope and Architecture Overview
 
-Netdata operates as a distributed observability system with four principal zones of trust. Understanding where each zone begins and ends is the foundation of this threat model.
+Netdata is a real-time infrastructure monitoring system comprising four principal components that interact across well-defined boundaries. The codebase reveals the following runtime components (verified in `src/`):
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  ZONE 1: AGENT HOST (Highest Trust)                                     │
-│  ┌──────────────────┐    stdin/stdout pipe    ┌──────────────────────┐  │
-│  │  External Plugin │ ──────────────────────► │  Netdata Daemon (C)  │  │
-│  │  (C/Go/Python/   │  (unidirectional only)  │  netdata process     │  │
-│  │   Bash/any lang) │                         │  - DB engine         │  │
-│  └──────────────────┘                         │  - Health engine     │  │
-│                                               │  - Web server        │  │
-│                                               │  - Streaming out     │  │
-│                                               │  - ACLK thread       │  │
-│                                               └──────────────────────┘  │
-└────────────────────────────────┬────────────────────────────────────────┘
-                                 │  TB-1: Agent Host ↔ Parent Node
-                                 │  Streaming: API key + optional TLS
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  ZONE 2: PARENT NODE / OBSERVABILITY CENTRALIZATION POINT               │
-│  (Another Netdata agent acting as aggregator)                           │
-│  Receives: metrics, metadata, alert states from child agents            │
-│  Exposes:  consolidated local Web API                                   │
-└────────────────────────────────┬────────────────────────────────────────┘
-                                 │  TB-2: Agent(s) ↔ Netdata Cloud
-                                 │  ACLK: MQTT/WSS/TLS port 443
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  ZONE 3: NETDATA CLOUD (External, SaaS)                                 │
-│  AWS-hosted microservices; stores only metadata, never raw metrics      │
-│  Authentication: JWT tokens at TLS termination; no passwords stored     │
-└────────────────────────────────┬────────────────────────────────────────┘
-                                 │  TB-3: Netdata Cloud ↔ End User Browser
-                                 │  HTTPS/WSS (TLS enforced)
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  ZONE 4: END USER BROWSER                                               │
-│  Consumes dashboard served from cloud or directly from agent Web API    │
-│  Authentication: Email via OAuth (Google/GitHub) or short-lived tokens  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-**Key architectural property:** Metric data never crosses TB-2 at rest. The ACLK channel carries only processed metrics transiently and essential metadata persistently. This is codified in `docs/security-and-privacy-design/netdata-cloud-security.md`: *"We do not store any metrics or logs in Netdata Cloud."*
+| Component | Code Location | Role |
+|---|---|---|
+| **Netdata Agent (daemon)** | `src/daemon/`, `src/database/`, `src/health/` | Collects, stores, and serves metrics on the monitored host |
+| **External Plugins** | `src/plugins.d/`, `src/collectors/`, `src/go/` | Collect raw data from OS, applications, and services; communicate with the daemon via stdin/stdout pipes |
+| **Streaming / Parent Node** | `src/streaming/` | Receives streamed metrics from child agents over TLS-protected TCP |
+| **ACLK (Agent-Cloud Link)** | `src/aclk/` | Outbound MQTT-over-WebSocket-over-TLS connection to Netdata Cloud |
+| **Web API / Dashboard Server** | `src/web/server/`, `src/web/api/` | HTTP/HTTPS endpoint for dashboards, API queries, and Functions calls |
+| **Netdata Cloud** | External SaaS (AWS) | Aggregates metadata; does **not** store raw metrics |
+| **End-User Browser** | External | Connects to Cloud or directly to Agent API |
+| **Registry** | `src/registry/` | Tracks user-to-agent relationships using browser cookies |
 
 ---
 
 ## 2. Trust Boundaries
 
-### TB-0: Plugin Process ↔ Netdata Daemon (Intra-host)
+Trust boundaries define where enforcement of authentication and authorization must occur. The following boundaries are derived from code-level analysis.
 
-**Source:** `src/plugins.d/README.md` — *"The communication between the external plugin and Netdata is unidirectional (from the plugin to Netdata), so that Netdata cannot manipulate an external plugin running with escalated privileges."*
+### 2.1 Boundary Map
 
-| Property | Detail |
-|---|---|
-| Transport | Ephemeral in-memory `stdin/stdout` pipes |
-| Direction | Strictly unidirectional: plugin → daemon |
-| Protocol | Text-based line-oriented `plugins.d` protocol (CHART, DIMENSION, SET, BEGIN, END, FUNCTION, CONFIG keywords) |
-| Authentication | None (process-level trust via OS PID namespace) |
-| Privilege model | Plugin may run setuid/escalated; daemon runs as unprivileged `netdata` user |
-| Daemon-to-plugin | Limited: FUNCTION call commands sent to plugin `stdin` (e.g., `FUNCTION`, `FUNCTION_PAYLOAD`, `FUNCTION_CANCEL`, `FUNCTION_PROGRESS`) |
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  MONITORED HOST (Trust Zone A — Highest)                            │
+│                                                                     │
+│  ┌──────────────┐  stdin/stdout  ┌──────────────────────────────┐  │
+│  │ External     │◄──────────────►│  Netdata Daemon (netdata)    │  │
+│  │ Plugins      │  in-memory pipe│  src/daemon/                 │  │
+│  │ (setuid ok)  │                │  src/database/               │  │
+│  └──────────────┘                └────────────┬─────────────────┘  │
+└────────────────────────────────────────────────│────────────────────┘
+                           ┌────────────────────┘
+            ┌──────────────▼──────────────────────────────────┐
+            │  NETWORK BOUNDARY (Trust Zone B)                │
+            │                                                  │
+            │  ┌──────────────┐    ┌────────────────────────┐ │
+            │  │ Web API      │    │ Streaming Connection   │ │
+            │  │ HTTP/HTTPS   │    │ API key + optional TLS │ │
+            │  │ src/web/     │    │ src/streaming/         │ │
+            │  └──────┬───────┘    └────────────┬───────────┘ │
+            │         │                         │             │
+            └─────────│─────────────────────────│─────────────┘
+                      │                         │
+         ┌────────────▼───────┐    ┌────────────▼────────────┐
+         │  END-USER BROWSER  │    │  PARENT NETDATA NODE    │
+         │  (Trust Zone D)    │    │  (Trust Zone B-ext)     │
+         │  Untrusted         │    │  API-key authenticated  │
+         └────────────────────┘    └─────────────────────────┘
+                       ┌────────────────────────────┐
+                       │  ACLK → NETDATA CLOUD       │
+                       │  MQTT/WSS/TLS + Claim Token │
+                       │  src/aclk/                  │
+                       │  (Trust Zone C — External)  │
+                       └────────────────────────────┘
+```
 
-**Trust implication:** The daemon implicitly trusts any process launched from `NETDATA_PLUGINS_DIR` or `NETDATA_USER_PLUGINS_DIRS`. There is no code-signing or integrity check on plugin binaries at the OS level beyond filesystem permissions.
+### 2.2 Trust Zone Definitions
 
----
+| Zone | Boundary | What is Trusted | What is Not Trusted |
+|---|---|---|---|
+| **A — Agent Host** | OS process boundary | Daemon process, plugin pipes | Plugin output content (parsed, not executed blindly) |
+| **B — Local Network / Streaming** | TCP connection with API key | Agents with valid streaming API keys and optional TLS | Unauthenticated connections; unencrypted traffic without explicit TLS config |
+| **C — Netdata Cloud** | ACLK claim + public-key cryptography + TLS | Cloud control plane for orchestrating queries | Cloud's ability to inject arbitrary code; Cloud cannot push executables |
+| **D — End-User Browser** | OAuth / JWT (Cloud); unauthenticated (direct agent) | Authenticated Cloud users with RBAC roles | All direct agent API callers unless ACLs or proxy authentication is in place |
 
-### TB-1: Child Agent ↔ Parent Agent (Streaming)
+### 2.3 Claim Token and Cloud Registration
 
-**Source:** `docs/security-and-privacy-design/netdata-agent-security.md`
-
-| Property | Detail |
-|---|---|
-| Transport | TCP (plain or TLS-wrapped) |
-| Port | Configurable; default 19999 |
-| Authentication | Shared **API key** (pre-shared secret) |
-| Encryption | Optional TLS — **not enforced by default** |
-| Data carried | Processed metrics, chart definitions, alert states, host labels |
-
-**Trust implication:** A child agent that presents a valid API key is accepted as fully trusted by the parent. There is no per-metric authorization—all metrics from a claimed child are accepted.
-
----
-
-### TB-2: Netdata Agent ↔ Netdata Cloud (ACLK)
-
-**Source:** `src/aclk/README.md`, `src/aclk/aclk.c`, `src/aclk/aclk_otp.c`
-
-| Property | Detail |
-|---|---|
-| Transport | MQTT over WebSocket over TLS (WSS) |
-| Port | 443 (outbound only from agent) |
-| Endpoints | `app.netdata.cloud`, `api.netdata.cloud`, `mqtt.netdata.cloud` |
-| Authentication | Public/private key cryptography; keys provisioned during node claiming (`src/claim/`) |
-| Activation | Only active after node is claimed to a Space |
-| Direction | Outbound only (agent initiates; cloud cannot directly dial into agent) |
-
-**Trust implication:** Netdata Cloud holds a trusted position: it can send query and function-call commands downstream to agents via the ACLK channel. A compromised Netdata Cloud service could issue `FUNCTION` commands to agents. This is the most critical trust boundary in the system.
-
----
-
-### TB-3: Netdata Cloud ↔ End User Browser
-
-| Property | Detail |
-|---|---|
-| Transport | HTTPS / WSS (TLS enforced) |
-| Authentication | JWT tokens issued after OAuth login (Google, GitHub) or short-lived email tokens |
-| Authorization | Role-based (admin, member, viewer) scopes enforced in cloud microservices |
-| Credential storage | No passwords stored anywhere; no credentials at rest |
+Node registration is handled in `src/claim/`. The claiming process establishes mutual authentication for the ACLK channel. Before claiming, the ACLK is **not activated** (`src/aclk/README.md`: *"Activates only after you connect a node to your Space"*). This is a material security control: an unclaimed agent does not initiate any outbound cloud connection.
 
 ---
 
-### TB-4: End User Browser ↔ Agent Web API (Direct Access)
+## 3. Data in Transit: Flows and Protections
 
-**Source:** `docs/security-and-privacy-design/netdata-agent-security.md` — *"Direct Agent Access: Typically unauthenticated, relies on LAN isolation or firewall policies."*
+### 3.1 Data Flow Inventory
 
-| Property | Detail |
-|---|---|
-| Transport | HTTP (default) or HTTPS if TLS configured |
-| Port | 19999 (default) |
-| Authentication | **None by default** |
-| Mitigation options | IP-based ACLs in `netdata.conf`, reverse proxy authentication |
+| Flow | Channel | Data Types | Encryption | Authentication |
+|---|---|---|---|---|
+| Plugin → Daemon | In-memory stdin/stdout pipe | Raw counters, metric values, chart definitions, host labels | N/A (in-process) | OS process isolation; pipe is not accessible outside daemon |
+| Agent → Streaming Parent | TCP (port configurable) | Processed metric values, chart metadata, alert states, replication data | **Optional TLS** (must be explicitly configured) | API key (pre-shared secret in `stream.conf`) |
+| Agent → ACLK → Cloud | MQTT over WebSocket over TLS port 443 | Metric metadata, alert configurations, minimal system metadata (hostname, OS, kernel version, cloud instance type) | **Mandatory TLS** | Public/private key pair established during claim; JWT for Cloud-side sessions |
+| Agent Web API → Browser | HTTP or HTTPS | Metric time-series, chart metadata, alert state, function results | **Optional TLS** (default: HTTP, no auth) | None by default; ACLs by IP; reverse proxy auth recommended |
+| Cloud → Browser | HTTPS | Aggregated dashboard views, alert notifications, metadata | **Mandatory TLS** | OAuth (Google/GitHub) or short-lived email token; JWT session |
+| Agent → Exporting Connectors | Varies per connector (`src/exporting/`) | Metric values | Connector-specific | Connector-specific credentials |
+| Registry → Browser | HTTP/HTTPS | Machine GUIDs, hostnames, user cookie | TLS if configured | Browser cookie (no server-side auth) |
 
-This is the highest-risk surface for network-exposed deployments.
+### 3.2 What Netdata Cloud Stores (Verified in `docs/security-and-privacy-design/netdata-cloud-security.md`)
 
----
+Netdata Cloud explicitly stores **no raw metrics**. The verified metadata stored is:
 
-## 3. Data in Transit: Flows, Channels, and Protections
-
-### 3.1 Complete Data Flow Inventory
-
-| Flow | Source | Destination | Channel | Data Type | Encryption | Authentication |
-|---|---|---|---|---|---|---|
-| F-1 | External Plugin | Netdata Daemon | `stdin/stdout` pipe | Raw → processed metrics | N/A (IPC) | OS process trust |
-| F-2 | Netdata Daemon | Local TSDB | Filesystem I/O | Time-series metric data | None (disk-level encrypt at OS) | OS file permissions |
-| F-3 | Netdata Daemon | Streaming Parent | TCP socket | Processed metrics, alerts, host metadata | Optional TLS | API key |
-| F-4 | Netdata Daemon | Netdata Cloud | ACLK (MQTT/WSS) | Processed metrics (transient), metadata (persistent), alert states | TLS mandatory | Public/private key |
-| F-5 | Netdata Cloud | User Browser | HTTPS/WSS | Aggregated metadata, alert configs, dashboard data | TLS mandatory | JWT (OAuth) |
-| F-6 | User Browser | Agent Web API | HTTP/HTTPS | Query requests; metric responses | Optional TLS | None by default |
-| F-7 | Netdata Cloud | Netdata Agent | ACLK (reverse direction) | Function call requests, query routing | TLS mandatory | Cloud-to-agent claim token |
-| F-8 | Netdata Daemon | External TSDB | HTTPS/protocol | Exported metrics | Connector-dependent | Connector-dependent |
-
-### 3.2 What Metadata is Stored by Netdata Cloud
-
-From `docs/security-and-privacy-design/netdata-cloud-security.md`, the following endpoints' data is stored persistently in AWS (and copied to Google BigQuery for analytics):
-
-| Metadata Stored | Source Endpoint |
+| Metadata Field | Source API Endpoint |
 |---|---|
 | Hostname | `/api/v1/info` |
-| Metric metadata (chart names, context names, dimension names) | `/api/v1/contexts` |
-| Alert configuration (rules, thresholds) | `/api/v1/alarms` |
-| User email address | Account registration |
-| IP address | Web proxy access logs |
+| Metric context names and metadata | `/api/v1/contexts` |
+| Alert configurations | `/api/v1/alarms` |
+| Email address (user identity) | Account registration |
+| IP addresses | Web proxy access logs |
 
-**Critically, raw metric values are NOT stored.** They flow through the ACLK transiently for live dashboard rendering and are discarded.
+All metadata is stored on AWS infrastructure, with a copy pushed to Google BigQuery for analytics.
 
-### 3.3 What Raw Data Never Leaves the Agent
+### 3.3 Streaming Protection Gap
 
-From `docs/security-and-privacy-design/netdata-agent-security.md`:
+The streaming channel (`src/streaming/`) uses a pre-shared API key but **TLS is optional and not enforced by default**. On untrusted networks (e.g., multi-tenant environments, cross-datacenter links), metrics and chart metadata travel in plaintext unless the operator explicitly configures TLS in `stream.conf`. This represents a confidentiality risk for metric data traversing untrusted infrastructure.
 
-> "When plugins collect data from databases or logs, only **processed metrics** are: Stored in Netdata databases / Sent to upstream Netdata servers / Archived to external time-series databases. Raw data remains local and is never transmitted."
-
-This means:
-- Database query results (e.g., MySQL slow queries) → only aggregated metric counts transmitted, not query text
-- Log file contents → only derived metric values transmitted, not log lines
-- Process command lines → only resource usage metrics transmitted, not argv values
+**Risk:** An attacker with network access can passively capture all streamed metrics and infer system state (CPU usage spikes, memory pressure, service availability patterns) without authentication.
 
 ---
 
 ## 4. ACLK Threat Model
 
-### 4.1 ACLK Architecture (Code-Level)
+### 4.1 ACLK Architecture (from `src/aclk/`)
 
-The ACLK implementation spans multiple source files:
-- `src/aclk/aclk.c` — main connection management and message dispatch (48 KB)
-- `src/aclk/aclk_otp.c` — OTP/token-based authentication and claiming (30 KB)
-- `src/aclk/aclk_rx_msgs.c` — inbound message handling from cloud (16 KB)
-- `src/aclk/aclk_tx_msgs.c` — outbound message transmission to cloud (7 KB)
-- `src/aclk/aclk_query.c` — query processing from cloud-originated requests (8 KB)
-- `src/aclk/https_client.c` — TLS HTTPS client used for provisioning (34 KB)
-- `src/aclk/mqtt_websockets/` — MQTT-over-WebSocket transport layer
+The ACLK subsystem consists of the following key source files:
 
-The ACLK connection is **outbound-only** and activated only after a node is claimed. It uses `mqtt.netdata.cloud:443` via WSS.
+| File | Role |
+|---|---|
+| `aclk.c` (48 KB) | Main ACLK loop, connection lifecycle management |
+| `aclk_otp.c` (31 KB) | One-time provisioning and claim token exchange |
+| `aclk_query.c` / `aclk_query_queue.c` | Cloud-originated query handling and queuing |
+| `aclk_rx_msgs.c` (17 KB) | Processing inbound messages from Cloud |
+| `aclk_tx_msgs.c` (8 KB) | Sending outbound messages to Cloud |
+| `https_client.c` (35 KB) | TLS HTTPS client used for OTP/provisioning |
+| `mqtt_websockets/` | MQTT-over-WebSocket transport layer |
+| `aclk_proxy.c` (7 KB) | HTTP/SOCKS proxy support for ACLK channel |
 
-### 4.2 What a Compromised Netdata Cloud Could Do
+The ACLK connection is **outbound only** from the agent's perspective. Required domains for allowlisting: `app.netdata.cloud`, `api.netdata.cloud`, `mqtt.netdata.cloud` (port 443).
 
-Because Netdata Cloud sits at TB-2 and can send messages back to agents via the ACLK (`aclk_rx_msgs.c`), a fully compromised Netdata Cloud (or a cloud-side MITM) represents a significant threat. The following attack scenarios are enumerated:
+### 4.2 Threat Scenarios: Attacker With Cloud Access
 
-| Threat ID | Scenario | Impact | Mitigating Control |
-|---|---|---|---|
-| ACLK-T1 | **Function call injection**: Cloud sends crafted `FUNCTION` commands to agents via ACLK, causing plugins to execute arbitrary plugin-defined functions | Data exfiltration via function responses; unintended state changes in monitored systems | Functions are predefined and registered by the plugin itself; plugins cannot be instructed to execute OS commands directly via functions |
-| ACLK-T2 | **Metadata poisoning**: Cloud injects false chart/metric metadata responses into browser dashboards | Operator misjudgment; false alerts | Agents sign or originate all real metric data; cloud merely aggregates metadata it received from agents |
-| ACLK-T3 | **Alert suppression**: Cloud withholds or modifies alert notification routing | Silent failures in production systems | Agents evaluate health alerts locally; cloud only carries notification metadata |
-| ACLK-T4 | **Configuration change injection via DynCfg**: Cloud routes `config` function calls to plugins, modifying dynamic configurations | Plugin behavior changes; data collection redirection | DynCfg commands require the plugin to have registered `CONFIG` support and accept the `edit permissions` bitmap |
-| ACLK-T5 | **Node unclaiming**: Revocation of the agent's cloud token | Loss of cloud-based monitoring visibility | ACLK simply deactivates; local monitoring continues unaffected |
-| ACLK-T6 | **Replay of ACLK messages**: An attacker captures and replays ACLK MQTT messages | Duplicate function calls; stale dashboard data | MQTT QoS and ACLK transaction IDs (seen in `pluginsd_functions.c` — `transaction_id`) prevent naive replay |
-| ACLK-T7 | **MitM of ACLK TLS connection**: Attacker intercepts the WSS connection to `mqtt.netdata.cloud` | Full visibility into metadata; injection of cloud→agent commands | TLS with server certificate validation; domain allowlisting recommended (`app.netdata.cloud`, `api.netdata.cloud`, `mqtt.netdata.cloud`) |
+The following scenarios assess what an adversary who has compromised a Netdata Cloud account or the Cloud infrastructure itself could do.
 
-### 4.3 ACLK Access Control for Functions
+#### T-ACLK-1: Unauthorized Dashboard Access (Account Compromise)
 
-From `src/plugins.d/README.md`, function registrations include explicit access controls:
+**Threat:** Attacker obtains a Cloud user's credentials (phishing, credential stuffing).  
+**Capability:** Access to all dashboards, metric metadata, and alert configurations for all nodes in the compromised Space.  
+**Impact:** Intelligence gathering — attacker can observe system performance patterns, scheduled maintenance windows (visible from metric gaps), software versions (via `_os_version`, `_kernel_version` labels), and infrastructure topology.  
+**Limitation:** Raw metrics are not stored in Cloud. Historical data requires querying agents via ACLK. If the agent is offline, no data retrieval is possible.  
+**Mitigation:** SSO with MFA (custom SSO available per contract); principle of least privilege using Netdata Cloud roles (admin/member with different RBAC rights).
 
-```
-FUNCTION [GLOBAL] "name and parameters" timeout "help" "tags" "access" priority version
-```
+#### T-ACLK-2: Malicious Cloud → Agent Command Injection
 
-The `"access"` field accepts:
-- `any` — callable by any user, **including unauthenticated users**
-- `member` — requires authenticated Netdata Cloud membership
-- `admin` — requires authenticated administrator role
+**Threat:** Attacker with Cloud infrastructure access (or a compromised `mqtt.netdata.cloud`) attempts to send malicious commands to agents via the ACLK channel.  
+**Capability:** Cloud can send query requests to agents via `aclk_query.c` and `aclk_rx_msgs.c`. These are routed to the internal Web API or Functions system.  
+**Limitation:** The ACLK message protocol (Protobuf/gRPC schemas in `src/aclk/aclk-schemas/` and `src/aclk/schema-wrappers/`) constrains what operations can be requested. The agent only executes predefined API queries and registered plugin Functions — **it does not accept executable code or shell commands via ACLK**.  
+**Impact (if Cloud is fully compromised):** Attacker can trigger any registered Function with `any` or `member` access level, retrieve metric data, read alert configurations. Cannot install software, write files, or execute arbitrary system commands.  
+**Residual Risk:** Functions registered by plugins with access level `any` can be invoked by anyone with Cloud access without further authentication. Functions with access level `admin` require Cloud-side RBAC enforcement.  
+**Mitigation:** Review all plugin-registered Functions (`FUNCTION` commands in `src/plugins.d/README.md`) and ensure sensitive functions are registered with `admin` access level.
 
-**Threat implication:** Functions registered with `access = any` via the ACLK path could be invoked by cloud-side logic without user authentication context. Auditors must review all `FUNCTION` registrations in deployed plugins for their `access` level.
+#### T-ACLK-3: MQTT Broker Man-in-the-Middle
 
-### 4.4 Inbound Message Types (ACLK RX)
+**Threat:** Attacker intercepts or impersonates `mqtt.netdata.cloud`.  
+**Capability:** Without successful TLS certificate validation bypass, this attack fails. The ACLK uses mandatory TLS with server certificate verification via `https_client.c`.  
+**Mitigation (existing):** TLS is mandatory; IP-based allowlisting is explicitly discouraged in favor of domain allowlisting because Cloud uses CDN-distributed edge nodes that change IPs. Certificate pinning is not documented as implemented.  
+**Residual Risk:** If a CA in the system trust store is compromised, a rogue certificate could enable MITM. Certificate pinning would mitigate this but is not confirmed present.
 
-The file `src/aclk/aclk_rx_msgs.c` (16 KB) handles cloud-to-agent inbound messages. These represent the attack surface for any cloud-side compromise:
-- Node connection/disconnection acknowledgments
-- Alert status updates
-- Query routing requests (for live dashboard data)
-- Function invocation forwarding
+#### T-ACLK-4: Claiming Token Theft
 
-### 4.5 ACLK Absence Scenario
+**Threat:** The claim token (`src/claim/`) is stolen during provisioning.  
+**Capability:** An attacker with the claim token before it is consumed could associate the agent with an attacker-controlled Space.  
+**Mitigation:** The claim process uses one-time provisioning via `aclk_otp.c`. Tokens are short-lived. Once claimed, the agent uses its established public/private key pair for ongoing authentication, not the original claim token.
 
-If ACLK is not configured (unclaimed agent), **no outbound cloud connection exists**. The attack surface of TB-2 is entirely eliminated. For air-gapped environments, disabling cloud claiming removes this boundary entirely.
+#### T-ACLK-5: Metadata Inference Attack
+
+**Threat:** Netdata Cloud or an attacker who has read access to Cloud metadata can infer sensitive infrastructure details.  
+**Capability:** The metadata stored includes `_cloud_provider_type`, `_cloud_instance_type`, `_cloud_instance_region`, `_os_name`, `_os_version`, `_kernel_version`, `_virtualization`, `_container`, `_is_k8s_node`. These fields are defined as special HOST_LABEL keys in `src/plugins.d/README.md` and transmitted to Cloud.  
+**Impact:** Reveals cloud provider, instance class, geographic region, OS, and kernel version — sufficient to identify applicable CVEs and target unpatched systems.  
+**Mitigation:** Restrict the Space to trusted administrators only; use Cloud RBAC to limit who can view node metadata; evaluate whether Cloud connectivity is required for air-gapped deployments.
 
 ---
 
-## 5. Agent Access Control Threats
+## 5. Agent API Access Control Threats
 
-### 5.1 Unauthenticated Web API
+### 5.1 Default Authentication Posture
 
-**Source:** `docs/security-and-privacy-design/netdata-agent-security.md`
+As stated in `docs/security-and-privacy-design/netdata-agent-security.md`:
 
-> *"Direct Agent Access: Typically unauthenticated, relies on LAN isolation or firewall policies."*
+> **Direct Agent Access** — Typically unauthenticated, relies on LAN isolation or firewall policies.
 
-The Netdata Web API (served from `src/web/api/` and `src/web/server/`) listens on port 19999 by default and requires no authentication unless explicitly configured.
+The web server code lives in `src/web/server/` and exposes API endpoints at `src/web/api/`. **By default, the Netdata Agent HTTP API requires no authentication.**
 
-#### Exposed API Surface
+### 5.2 Threat Scenarios: Unauthenticated API Access
 
-The following endpoints represent the unauthenticated attack surface (`src/web/api/` directory):
+#### T-API-1: Metric Exfiltration
 
-| Endpoint Pattern | Data Exposed | Risk Level |
-|---|---|---|
-| `/api/v1/info` | Hostname, OS version, kernel version, architecture, cloud provider, virtualization type | **HIGH** — system fingerprinting |
-| `/api/v1/contexts` | All metric names, chart names, plugin names, module names | **HIGH** — infrastructure mapping |
-| `/api/v1/alarms` | Alert names, thresholds, notification configurations | **MEDIUM** — security configuration disclosure |
-| `/api/v1/data` | Time-series metric values for any chart | **MEDIUM** — operational intelligence |
-| `/api/v1/functions` | List of all registered plugin functions | **MEDIUM** — capability enumeration |
-| `/api/v1/function` | Execute a registered function (subject to `access` ACL) | **HIGH** — may expose sensitive operational data |
+**Threat:** Any network-reachable host can query `/api/v1/data`, `/api/v1/allmetrics`, `/api/v1/contexts`.  
+**Data Exposed:** All collected metric time-series, chart dimensions, and context names.  
+**Impact:** An attacker inside the same network segment can build a detailed performance profile of all monitored hosts.  
+**Mitigation:** Configure IP-based ACLs in `netdata.conf` (`[web]` section); place agent behind an authenticating reverse proxy (nginx, Apache with `auth_basic` or OAuth2 proxy); restrict the listening interface to `localhost` if only local dashboard access is needed.
 
-#### Threat Scenarios: Unauthenticated API
+#### T-API-2: Function Invocation
 
-| Threat ID | Scenario | Impact | Mitigation |
-|---|---|---|---|
-| API-T1 | **Reconnaissance**: Attacker queries `/api/v1/info` to fingerprint the host (OS, kernel, CPU count, cloud provider, region) | Enables targeted exploitation of known CVEs | IP-based ACLs in `netdata.conf`; firewall rules blocking port 19999 |
-| API-T2 | **Infrastructure mapping**: Attacker enumerates `/api/v1/contexts` to discover all monitored services, databases, and applications | Reveals running services (MySQL, Redis, etc.) without authentication | Bind to localhost only in `netdata.conf` (`bind to = 127.0.0.1`) |
-| API-T3 | **Function invocation**: An `access = any` function is invoked without credentials | Data exfiltration (e.g., process list, open files) | Audit all plugin function `access` levels; prefer `member` or `admin` |
-| API-T4 | **Alert rule disclosure**: `/api/v1/alarms` reveals threshold values and notification targets | Attacker learns normal vs. abnormal thresholds to stay below detection | Restrict API to authenticated proxy |
-| API-T5 | **DDoS via API flooding**: Attacker sends high-volume requests to the API server | Resource exhaustion on the monitored host | Fixed thread count (configured max threads); the Web API server is in `src/web/server/` |
-| API-T6 | **Streaming key exposure**: If a streaming API key is logged or visible in responses | Child agents can be spoofed | Keys are in config files only; not returned via API |
+**Threat:** Functions registered by plugins (e.g., `apps.plugin` process list, `go.d.plugin` module data) are invocable via `/api/v1/function`.  
+**Key Risk:** Functions registered with `access = any` (per `src/plugins.d/README.md`) are accessible to unauthenticated callers. The `FUNCTION` protocol allows plugins to return live process lists, active connections, and other sensitive runtime data.  
+**Impact:** Unauthenticated attacker can invoke process list functions to enumerate running processes, users, and services on the monitored host.  
+**Example:** `apps.plugin` and `go.d.plugin` both register Functions exposed through this endpoint.  
+**Mitigation:** Register sensitive functions with `member` or `admin` access; deploy an authenticating reverse proxy for all external-facing agents.
 
-### 5.2 Access Control Configuration
+#### T-API-3: Registry Poisoning
 
-The agent provides these configurable controls in `netdata.conf`:
+**Threat:** The registry (`src/registry/`) uses a browser cookie to track which agents a user has visited. It stores machine GUIDs and hostnames.  
+**Impact:** If the registry endpoint is unauthenticated and accessible, an attacker can enumerate hostnames and machine GUIDs for all agents that have registered with this registry server.  
+**Mitigation:** Disable the registry on publicly accessible agents; use only a centralized private registry behind authentication.
 
-```ini
-[web]
-    bind to = *                    # THREAT: default binds to all interfaces
-    # bind to = 127.0.0.1          # Recommended for single-host deployments
+#### T-API-4: Dynamic Configuration (DynCfg) Exposure
 
-[web]
-    allow connections from = *     # THREAT: allows all source IPs
-    allow management from = localhost  # Management API restricted by default
+**Threat:** The `CONFIG` protocol (`src/plugins.d/README.md`) allows plugins to expose configuration management endpoints accessible via the Functions API.  
+**Capability:** An authenticated (or unauthenticated if `access = any`) user can read (`get`) or modify (`update`, `add`, `remove`) dynamic plugin configurations.  
+**Impact:** Attacker could disable collectors, change collection targets, or inject configurations causing the agent to query attacker-controlled endpoints.  
+**Mitigation:** DynCfg `view permissions` and `edit permissions` are bitmaps enforced by the Netdata permission system; set them to non-zero values to require authenticated admin access.
 
-[streaming]
-    api key = <UUID>               # Pre-shared key for agent-to-agent streaming
-```
+#### T-API-5: WebSocket / RTC Upgrade Abuse
 
-**Default security posture:** Netdata's default configuration exposes the Web API on all network interfaces without authentication. This is intentional for monitoring use cases within trusted LAN segments, but is a significant risk if the host is network-accessible.
-
-### 5.3 Registry Threat Surface
-
-The `src/registry/` component maintains a user-facing registry mapping browser cookies to known Netdata instances. **Source: `docs/security-and-privacy-design/netdata-agent-security.md`** — cookies identify users across Netdata instances.
-
-| Threat | Detail |
-|---|---|
-| Registry enumeration | Registry may disclose hostnames of other Netdata agents a browser has visited |
-| Cookie theft | Session cookie allows impersonating a user across all their Netdata instances |
-| Mitigation | Registry can be pointed to a central server or disabled; cookies are first-party only |
+The web server includes `src/web/websocket/` and `src/web/rtc/` directories, indicating WebSocket and real-time communication capabilities.  
+**Threat:** If WebSocket upgrade endpoints are unauthenticated, a persistent connection could allow an attacker to monitor all live metric streaming for extended periods without triggering rate limits designed for HTTP requests.  
+**Mitigation:** Apply the same ACL and reverse proxy authentication controls to WebSocket endpoints as to HTTP API endpoints.
 
 ---
 
 ## 6. Supply Chain Risks: Plugin Execution Model
 
-### 6.1 Plugin Trust Model
+### 6.1 Plugin Execution Architecture (from `src/plugins.d/`)
 
-**Source:** `src/plugins.d/README.md`
+The `plugins.d` system (`src/plugins.d/plugins_d.c`, `pluginsd_parser.c`) executes external programs as child processes and communicates via stdin/stdout pipes. Key security properties documented in `src/plugins.d/README.md`:
 
-Netdata's plugin system is designed for extensibility but introduces meaningful supply chain risks:
+> "The communication between the external plugin and Netdata is **unidirectional** (from the plugin to Netdata), so that Netdata cannot manipulate an external plugin running with escalated privileges."
 
-> *"External data collection plugins may be written in any computer language."*
-> *"External data collection plugins may use O/S capabilities or `setuid` to run with escalated privileges."*
+Plugins communicate via a defined text protocol. The daemon parses only recognized keywords: `CHART`, `DIMENSION`, `BEGIN`, `SET`, `END`, `FUNCTION`, `CONFIG`, `HOST_DEFINE`, etc. Unrecognized output causes the plugin to be disabled.
 
-Plugins are discovered and auto-launched from two directories:
-- `NETDATA_PLUGINS_DIR` (stock plugins, typically `/usr/libexec/netdata/plugins.d/`)
-- `NETDATA_USER_PLUGINS_DIRS` (user-supplied plugins)
+### 6.2 Plugin Privilege Model
 
-The daemon scans for new plugins every `check for new plugins every` seconds (default configurable in `[plugins]` section of `netdata.conf`). **Any executable placed in these directories will be automatically launched.**
-
-### 6.2 Plugin Inventory
-
-The following external plugins ship with Netdata and each represents a supply chain component:
-
-| Plugin | Language | Privileges Required | Risk Surface |
+| Plugin | Language | Privilege Escalation | Risk Level |
 |---|---|---|---|
-| `apps.plugin` | C | Elevated (process tree access) | Full process enumeration; sees all user processes |
-| `ebpf.plugin` | C | Root/CAP_SYS_ADMIN | Kernel-level access via eBPF; highest privilege level |
-| `freeipmi.plugin` | C | Elevated (IPMI access) | Hardware sensor access; physical infrastructure data |
-| `go.d.plugin` | Go | Standard | Connects to 3rd-party APIs; broad network access |
-| `python.d.plugin` | Python | Standard | Orchestrator for Python modules; broad ecosystem |
-| `charts.d.plugin` | Bash | Standard | Shell-based; susceptible to shell injection if misconfigured |
-| `cups.plugin` | C | Standard | CUPS API access |
-| `nfacct.plugin` | C | NET_ADMIN capability | Netfilter access; firewall rule visibility |
-| `perf.plugin` | C | Elevated (PMU access) | CPU performance counter access |
+| `apps.plugin` | C | `setuid` (reads `/proc`) | Medium — accesses full process tree |
+| `ebpf.plugin` | C | Requires root or `CAP_SYS_ADMIN` | High — kernel-level access |
+| `freeipmi.plugin` | C | Escalated (IPMI hardware access) | Medium |
+| `nfacct.plugin` | C | Requires `CAP_NET_ADMIN` | Medium — network subsystem |
+| `go.d.plugin` | Go | User-level | Low |
+| `python.d.plugin` | Python | User-level | Low–Medium (scripted) |
+| `charts.d.plugin` | Bash | User-level | Medium (shell scripting) |
+
+Plugins with `setuid` or elevated capabilities are documented as performing **only predefined collection tasks** and keeping raw data inside their local process. They do not accept inbound commands from the daemon.
 
 ### 6.3 Supply Chain Threat Scenarios
 
-| Threat ID | Scenario | Impact | Mitigating Control |
+#### T-SC-1: Malicious Plugin Installation
+
+**Threat:** An attacker with write access to `/usr/libexec/netdata/plugins.d/` installs a malicious binary.  
+**Trigger:** Netdata automatically scans this directory every 60 seconds (`check for new plugins every = 60` in `netdata.conf`) and starts new discovered plugins.  
+**Impact:** Malicious plugin runs as the `netdata` user (or elevated if compiled with `setuid`), can exfiltrate data or establish persistence under the guise of a monitoring process. The auto-start behavior (`enable running new plugins = yes` by default) makes this a reliable persistence vector.  
+**Mitigation:**  
+  - Set `enable running new plugins = no` and explicitly whitelist plugins.  
+  - Monitor the plugins directory for new or modified files (file integrity monitoring).  
+  - Ensure strict write permissions on `/usr/libexec/netdata/plugins.d/`.
+
+#### T-SC-2: Compromised Plugin Binary (Package Supply Chain)
+
+**Threat:** A compromised version of `go.d.plugin` or `python.d.plugin` is delivered via the official Netdata package repository or via a distribution package manager.  
+**Impact:** Since `go.d.plugin` collects from hundreds of data sources (databases, web servers, message queues, cloud APIs), a compromised version could exfiltrate credentials, connection strings, or sensitive endpoint data that plugins observe.  
+**Mitigation:** Verify package signatures (`.deb`/`.rpm` GPG signatures); use Netdata's official installation scripts which verify checksums; monitor plugin processes with EDR solutions; use read-only container filesystems where applicable.
+
+#### T-SC-3: Plugin Receiving Arbitrary Commands (FUNCTION Abuse)
+
+**Threat:** While the communication is documented as primarily unidirectional, the daemon **does** send commands to plugin stdin: `FUNCTION`, `FUNCTION_PAYLOAD`, `FUNCTION_CANCEL`, `FUNCTION_PROGRESS` (per `src/plugins.d/README.md`). A malicious actor who can invoke a Function via the API can cause the daemon to forward that call to the plugin.  
+**Impact:** The function parameters are passed through to the plugin. If the plugin does not properly validate and sanitize function parameters, this could result in injection vulnerabilities within the plugin's execution context.  
+**Mitigation:** Plugins must validate all parameters received via `FUNCTION` calls; the daemon's role is routing, not sanitization.
+
+#### T-SC-4: python.d.plugin and charts.d.plugin Module Trust
+
+**Threat:** Python and Bash plugin modules are loaded dynamically. A malicious or vulnerable module added under the respective plugin directories could execute arbitrary code in the plugin's runtime context.  
+**Impact:** Python and Bash are interpreted; a compromised module file could perform arbitrary operations in the `netdata` user context.  
+**Mitigation:** Apply file integrity monitoring to module directories; restrict write access; review custom modules before deployment.
+
+#### T-SC-5: Dependency Vulnerabilities in Go and Rust Crates
+
+The repository includes `src/go/` (Go dependencies) and `src/crates/` (Rust dependencies). A `.github/dependabot.yml` is present, indicating automated dependency update monitoring.  
+**Threat:** CVEs in transitive dependencies of `go.d.plugin` or Rust-based collectors could be exploited if a data source sends crafted responses.  
+**Mitigation:** Dependabot is configured; ensure PRs from Dependabot are reviewed and merged promptly; conduct periodic SBOM reviews of Go and Rust dependency trees.
+
+---
+
+## 7. Threat Summary Matrix (STRIDE)
+
+| Threat ID | Category | Component | Spoofing | Tampering | Repudiation | Info Disclosure | DoS | Elevation |
+|---|---|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| T-ACLK-1 | ACLK | Cloud Account | ✓ | | | ✓ | | |
+| T-ACLK-2 | ACLK | Cloud→Agent | | ✓ | | | | ✓ |
+| T-ACLK-3 | ACLK | MQTT Transport | ✓ | ✓ | | ✓ | | |
+| T-ACLK-4 | ACLK | Claim Token | ✓ | | | | | |
+| T-ACLK-5 | ACLK | Metadata | | | | ✓ | | |
+| T-API-1 | Web API | HTTP Endpoint | | | ✓ | ✓ | | |
+| T-API-2 | Web API | Functions | | | ✓ | ✓ | | ✓ |
+| T-API-3 | Web API | Registry | | | | ✓ | | |
+| T-API-4 | Web API | DynCfg | | ✓ | ✓ | | | |
+| T-API-5 | Web API | WebSocket | | | | ✓ | ✓ | |
+| T-SC-1 | Supply Chain | Plugin Dir | | ✓ | | ✓ | | ✓ |
+| T-SC-2 | Supply Chain | Package | | ✓ | | ✓ | | ✓ |
+| T-SC-3 | Supply Chain | FUNCTION Proto | | ✓ | | | | ✓ |
+| T-SC-4 | Supply Chain | Python/Bash | | ✓ | | | | ✓ |
+| T-SC-5 | Supply Chain | Dependencies | | ✓ | | ✓ | ✓ | |
+
+**Severity Ratings:**
+
+| Threat ID | Likelihood (Default Config) | Impact | Overall |
 |---|---|---|---|
-| SC-T1 | **Malicious plugin binary**: Attacker replaces a plugin binary in `NETDATA_PLUGINS_DIR` (e.g., via package manager compromise) | Full host compromise at the plugin's privilege level | Package signature verification; filesystem integrity monitoring on plugin directories |
-| SC-T2 | **Malicious user plugin**: A third-party plugin installed to `NETDATA_USER_PLUGINS_DIRS` contains backdoor code | Data exfiltration; privilege escalation via setuid wrapper | Audit all plugins in user plugin directories; restrict write access to these directories |
-| SC-T3 | **Plugin orchestrator abuse** (`python.d`, `charts.d`): A malicious module is dropped into the orchestrator's module directory | Code execution under orchestrator's runtime | Module directories should have root ownership; restrict write access |
-| SC-T4 | **setuid plugin privilege escalation**: A vulnerability in `apps.plugin` or `ebpf.plugin` is exploited | Root compromise of the monitored host | Keep plugins patched; use Linux security modules (AppArmor/SELinux) to confine plugin capabilities |
-| SC-T5 | **Protocol injection via plugin output**: A plugin is tricked into outputting crafted `FUNCTION` or `HOST_DEFINE` lines | Rogue virtual hosts added to Netdata; false metric data | Netdata's parser (`pluginsd_parser.c`, 60 KB) validates protocol syntax, but semantic validation depends on plugin correctness |
-| SC-T6 | **Dependency compromise**: The `go.d.plugin` (Go) or Python modules depend on third-party libraries that are compromised | Supply chain attack affecting monitoring infrastructure | Dependency auditing; `go.sum` and Python requirements pinning; GitHub Dependabot is configured (`.github/dependabot.yml`) |
-| SC-T7 | **eBPF program compromise**: `ebpf.plugin` loads eBPF programs into the kernel | Kernel-level arbitrary code execution | eBPF verifier provides some protection; kernel version requirements limit scope |
-
-### 6.4 Plugin Communication Security (Code-Level)
-
-From `src/plugins.d/README.md`, the unidirectional communication design is a deliberate security control:
-
-> *"The communication between the external plugin and Netdata is unidirectional (from the plugin to Netdata), so that Netdata cannot manipulate an external plugin running with escalated privileges."*
-
-The exception is the **Functions** feature, where Netdata does send commands back to the plugin's `stdin`:
-```
-FUNCTION transaction_id timeout "name and parameters" "user permissions value" "source of request"
-```
-
-This bidirectional channel (for functions only) means:
-1. A plugin with `setuid` escalated privileges **can receive commands from the daemon**
-2. The daemon (running as unprivileged `netdata`) acts as an intermediary between user requests and elevated plugin functions
-3. Function permissions (`any`, `member`, `admin`) gate who can trigger this
-
-**Critical control:** The `"user permissions value"` field in the `FUNCTION` command sent to the plugin encodes the ACL context, allowing the plugin to enforce its own authorization.
-
-### 6.5 Dependabot and CI Security
-
-The repository includes `.github/dependabot.yml` for automated dependency updates and `.github/codeql/` for CodeQL static analysis, indicating automated supply chain monitoring for known vulnerabilities in dependencies.
+| T-API-1 | High (unauthenticated by default) | Medium | **HIGH** |
+| T-API-2 | High | High | **HIGH** |
+| T-SC-1 | Medium (requires write access) | Critical | **HIGH** |
+| T-ACLK-2 | Low (requires Cloud compromise) | High | **MEDIUM** |
+| T-ACLK-5 | High | Medium | **MEDIUM** |
+| T-SC-2 | Low | High | **MEDIUM** |
+| T-API-4 | Medium | High | **MEDIUM** |
+| T-ACLK-1 | Medium | Medium | **MEDIUM** |
+| T-ACLK-3 | Low (TLS enforced) | High | **LOW–MEDIUM** |
+| T-API-3 | Medium | Low | **LOW** |
+| T-ACLK-4 | Low | Medium | **LOW** |
 
 ---
 
-## 7. Cross-Cutting Security Controls
+## 8. Recommended Mitigations by Deployment Tier
 
-### 7.1 Defense Against Common Attack Classes
+### 8.1 All Deployments (Baseline)
 
-**Source:** `docs/security-and-privacy-design/netdata-agent-security.md`
+1. **Restrict Agent API listening interface**: Configure `bind to = 127.0.0.1` in `netdata.conf` `[web]` section unless external dashboard access is required.
+2. **Enable ACLs**: Use `allow connections from` and `allow dashboard from` in `netdata.conf` to restrict API access by IP CIDR.
+3. **Disable new plugin auto-discovery**: Set `enable running new plugins = no` and whitelist each plugin explicitly in `netdata.conf` `[plugins]`.
+4. **File integrity monitoring**: Monitor `/usr/libexec/netdata/plugins.d/` and Python/Bash module directories for unauthorized modifications.
+5. **Enable TLS for Streaming**: If streaming metrics between agents crosses any untrusted network segment, configure TLS in `stream.conf` on both sender and receiver.
 
-| Attack Class | Defense Mechanism | Code Location |
-|---|---|---|
-| SQL Injection | "No UI data passed back to database-accessing plugins" — plugins are read-only collectors | `src/plugins.d/` — unidirectional pipe design |
-| DDoS (API flood) | Fixed thread counts; automatic memory management | `src/web/server/` |
-| Memory exhaustion | System Resource Starvation defense: nice priority; early termination in OS-OOM events | `src/daemon/` |
-| Command injection | Plugin stdin only receives structured FUNCTION commands, not shell strings | `src/plugins.d/pluginsd_functions.c` |
-| Replay attacks | MQTT transaction IDs; ACLK connection state tracking | `src/aclk/aclk_query_queue.h` |
+### 8.2 Internet-Exposed or Multi-Tenant Deployments
 
-### 7.2 Privilege Separation Architecture
+6. **Authenticating reverse proxy**: Place Netdata Agent behind nginx, Caddy, or Apache with `auth_basic`, OAuth2 proxy, or mTLS to enforce authentication for all API and dashboard access. This is the primary documented mitigation for T-API-1 and T-API-2.
+7. **Disable Registry on public-facing agents**: Set `[registry] enabled = no` unless a private centralized registry is required.
+8. **Review Function access levels**: Audit all registered plugin Functions for access level `any` and determine whether `member` or `admin` is more appropriate for each.
+9. **DynCfg permission hardening**: Ensure `view permissions` and `edit permissions` bitmaps in CONFIG definitions require authenticated admin access.
 
-```
-netdata daemon        → runs as unprivileged 'netdata' user
-apps.plugin           → runs with elevated privileges (setuid or cap)
-ebpf.plugin           → requires CAP_SYS_ADMIN or root
-freeipmi.plugin       → requires IPMI device access
-charts.d.plugin       → runs as 'netdata' user (bash scripts)
-go.d.plugin           → runs as 'netdata' user
-python.d.plugin       → runs as 'netdata' user
-```
+### 8.3 High-Security / Regulated Environments
 
-Escalated-privilege plugins perform only predefined collection tasks and keep raw data inside the local process per the documented design.
+10. **Disable ACLK for air-gapped deployments**: If Cloud connectivity is not required, do not claim nodes. An unclaimed agent does not activate the ACLK (`src/aclk/README.md`).
+11. **Netdata Cloud RBAC**: Use role-based access control within Cloud spaces; grant minimum necessary roles (admin vs. member distinction provides access to different Function levels).
+12. **Custom SSO with MFA**: Available per enterprise contract to mitigate T-ACLK-1.
+13. **SBOM and dependency auditing**: Periodically review Go module dependency tree in `src/go/` and Rust crates in `src/crates/` against known CVE databases.
+14. **`ebpf.plugin` privilege review**: Evaluate whether `ebpf.plugin` (requires `CAP_SYS_ADMIN` or root) is necessary; disable it in `netdata.conf` if kernel-level metrics are not required, as it represents the highest privilege boundary in the plugin execution model.
+15. **Network segmentation**: Isolate streaming network segments (child-to-parent) from production application networks. Streaming API keys are long-lived pre-shared secrets and their compromise enables full metric access to a Parent node.
 
-### 7.3 Compliance Controls
+---
 
-| Standard | Relevant Control |
+## Appendix A: Key Source Files for Auditors
+
+| File | Security Relevance |
 |---|---|
-| PCI DSS Level 1 | Raw data locality (no cardholder data transmitted); audit logs; TLS on all external connections |
-| HIPAA | PHI never flows through metrics pipeline; metadata only; access controls configurable |
-| GDPR/CCPA | Cloud stores only email and IP; 90-day deletion cycle; self-service account deletion |
-| SOC 2 Type 2 | Netdata Cloud holds SOC 2 Type 1 and Type 2 attestations |
+| `src/aclk/aclk.c` | ACLK connection lifecycle, reconnection logic |
+| `src/aclk/aclk_otp.c` | Claim token provisioning, key exchange |
+| `src/aclk/aclk_rx_msgs.c` | Inbound Cloud message handling — review for injection risks |
+| `src/aclk/aclk_query.c` | Cloud-originated query dispatch — maps to agent API calls |
+| `src/plugins.d/pluginsd_parser.c` | Plugin protocol parser — critical for T-SC-3 analysis |
+| `src/plugins.d/pluginsd_functions.c` | Function invocation dispatch — review access level enforcement |
+| `src/web/server/` | HTTP server — ACL and TLS configuration |
+| `src/streaming/` | Streaming authentication and TLS logic |
+| `src/claim/` | Node claiming and ACLK credential establishment |
+| `src/registry/` | Browser registry — hostname and GUID storage |
+| `docs/security-and-privacy-design/netdata-agent-security.md` | Official agent security design document |
+| `docs/security-and-privacy-design/netdata-cloud-security.md` | Official Cloud security design document |
 
----
+## Appendix B: Compliance Posture
 
-## 8. Threat Summary Table (STRIDE)
+Per `docs/security-and-privacy-design/`:
 
-| ID | Threat | Category | Zone | Likelihood | Impact | Overall Risk |
-|---|---|---|---|---|---|---|
-| ACLK-T1 | Function call injection via compromised cloud | Tampering / Elevation | TB-2 | Low | High | **Medium** |
-| ACLK-T2 | Metadata poisoning by cloud MitM | Tampering | TB-2 | Low | Medium | **Low** |
-| ACLK-T3 | Alert suppression by cloud | Denial of Service | TB-2 | Low | High | **Medium** |
-| ACLK-T4 | DynCfg injection changing plugin behavior | Tampering | TB-2 | Low | High | **Medium** |
-| ACLK-T7 | TLS MitM on ACLK WSS connection | Information Disclosure | TB-2 | Low | High | **Medium** |
-| API-T1 | System fingerprinting via unauthenticated `/api/v1/info` | Information Disclosure | TB-4 | **High** | High | **HIGH** |
-| API-T2 | Infrastructure mapping via `/api/v1/contexts` | Information Disclosure | TB-4 | **High** | High | **HIGH** |
-| API-T3 | Invocation of `access=any` functions without credentials | Elevation of Privilege | TB-4 | **High** | High | **HIGH** |
-| API-T5 | API flooding / resource exhaustion | Denial of Service | TB-4 | Medium | Medium | **Medium** |
-| SC-T1 | Malicious plugin binary via package compromise | Tampering | Zone 1 | Low | Critical | **HIGH** |
-| SC-T2 | Malicious user-installed plugin | Tampering / Elevation | Zone 1 | Medium | Critical | **HIGH** |
-| SC-T4 | Vulnerability exploitation in setuid plugin | Elevation of Privilege | Zone 1 | Low | Critical | **Medium** |
-| SC-T6 | Third-party dependency compromise (Go/Python) | Tampering | Zone 1 | Low | High | **Medium** |
-| SC-T7 | eBPF program compromise leading to kernel execution | Elevation of Privilege | Zone 1 | Very Low | Critical | **Medium** |
-
----
-
-## 9. Auditor Checklist
-
-### Network Exposure
-- [ ] **Verify port 19999 is NOT exposed to untrusted networks.** Run `ss -tlnp | grep 19999` on every Netdata agent.
-- [ ] **Confirm `bind to` in `netdata.conf` is not `*` (all interfaces)** if the host has public network interfaces.
-- [ ] **Verify TLS is configured** for the Web API if direct browser access is required: `[web] → ssl key file` and `ssl certificate file` must be set.
-- [ ] **Confirm streaming connections use TLS**: `[stream]` section must have `ssl skip certificate verification = no`.
-
-### ACL
+| Standard | Posture |
+|---|---|
+| **PCI DSS** | Agent supports PCI Level 1 compliance environments; raw data never transmitted |
+| **

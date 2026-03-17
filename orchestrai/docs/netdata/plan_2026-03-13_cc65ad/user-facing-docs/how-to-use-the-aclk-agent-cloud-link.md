@@ -1,84 +1,78 @@
 ## What Is the ACLK?
 
-The **Agent-Cloud Link (ACLK)** is the secure connection that links each Netdata Agent running on your servers to Netdata Cloud. It is the backbone that makes centralized monitoring possible — allowing you to view all your nodes, receive alerts, and run queries from the Netdata Cloud dashboard, regardless of where your servers are located.
+The **Agent-Cloud Link (ACLK)** is the secure connection that bridges your Netdata Agent — running on your server, VM, or container — with Netdata Cloud. It is what allows you to view your infrastructure's data in the Netdata Cloud dashboard, receive alerts, and collaborate with your team, all from a single place.
 
-Think of the ACLK as a secure, private tunnel that your Netdata Agent opens outward toward Netdata Cloud. Because the connection is **outbound-only** (initiated from your server, not from the cloud), you do not need to open any inbound firewall ports or expose your servers to the internet.
+Think of the ACLK as a private, encrypted tunnel that your agent opens outward toward the cloud. Your servers never need to be publicly exposed or accept incoming connections — the agent always initiates the connection, keeping your infrastructure safe.
 
-The ACLK activates automatically the moment you connect a node to your Netdata Cloud Space. No manual configuration is required under normal circumstances.
+Key characteristics of the ACLK:
 
----
-
-## How the ACLK Works
-
-### Outbound-Only, Encrypted Connection
-
-Your Netdata Agent establishes the connection to Netdata Cloud — the cloud never "calls into" your servers. This design means:
-
-- **No open inbound ports are required** on your servers or firewall.
-- **All traffic is encrypted** using industry-standard TLS/SSL, the same technology used by secure websites (HTTPS).
-- The connection uses standard **port 443** (the same port as HTTPS web traffic), which is almost universally allowed through firewalls.
-
-### Secure WebSocket Protocol
-
-The ACLK uses an **encrypted WebSocket connection over port 443**. On top of this, it runs the MQTT messaging protocol, which is a lightweight, reliable protocol designed for maintaining persistent connections — ensuring your monitoring data and alerts are always flowing in real time.
-
-### How Data Flows
-
-```
-Your Server (Agent) → [ACLK secure tunnel] → Netdata Cloud
-Your Server (Agent) → [streaming] → Parent Agent → [ACLK] → Netdata Cloud
-```
-
-If you have a Parent agent (a central collection point for multiple child agents), the child agents stream their data to the Parent, and the Parent then maintains the single ACLK connection to Netdata Cloud on their behalf.
+- **Outbound-only**: Your agent reaches out to Netdata Cloud — Netdata Cloud never connects inward to your machines.
+- **Always encrypted**: All communication is secured using TLS/SSL encryption from end to end.
+- **Automatically activated**: The ACLK turns on automatically as soon as you connect a node to your Netdata Cloud Space — no manual setup required.
+- **No open firewall ports needed**: Since the connection is outbound, you do not need to open any inbound ports on your firewall.
 
 ---
 
 ## Network Requirements
 
-For the ACLK to connect successfully, your Netdata Agent needs outbound access to the following Netdata Cloud domains over port 443:
+For the ACLK to work, each agent needs outbound internet access to Netdata Cloud. The connection uses standard **HTTPS/WebSocket (WSS) on port 443**, which is open on virtually all corporate and home networks.
+
+### Domains Your Agents Must Be Able to Reach
+
+Your network or firewall must allow outbound traffic to the following domains:
 
 | Domain | Purpose |
-|--------|---------|
-| `app.netdata.cloud` | Main Netdata Cloud application |
-| `api.netdata.cloud` | API and agent coordination |
-| `mqtt.netdata.cloud` | Real-time messaging connection |
+|---|---|
+| `app.netdata.cloud` | Netdata Cloud main application |
+| `api.netdata.cloud` | API communication |
+| `mqtt.netdata.cloud` | Real-time messaging over WebSocket |
 
-> **Important:** Always allowlist by **domain name**, not by IP address. Netdata Cloud uses CDN edge servers whose IP addresses vary by geographic region and can change without notice.
+> **Important:** Always allowlist by **domain name**, not by IP address. Netdata Cloud uses CDN edge servers, and IP addresses can change at any time and vary by geographic region.
 
 ---
 
-## What Data Travels Through the ACLK
+## What Data Travels Through the ACLK?
 
-The ACLK is designed with privacy in mind. Here is a clear breakdown of what does and does not pass through it:
+The ACLK is designed with privacy at its core. Here is a clear breakdown of what is and is not transmitted:
 
 ### ✅ What IS Transmitted
+- **Metadata** needed to identify and organize your nodes (node names, statuses, capabilities)
+- **Alert and notification data** so Netdata Cloud can display and route your alerts
+- **Query requests and responses** when you interact with charts and dashboards in Netdata Cloud (the data is fetched on-demand from your agent, not stored in the cloud)
+- **Context information** about what metrics your agent is collecting
 
-- **Metadata**: Node names, hostnames, labels, and configuration information needed to display your infrastructure in Netdata Cloud.
-- **Alert status and notifications**: The state of your health alerts (firing, cleared, etc.) so you receive notifications and see alert history in the cloud.
-- **Metric queries**: When you view a chart or dashboard in Netdata Cloud, the cloud sends a query request through the ACLK, and your Agent responds with the data in real time.
-- **Node context information**: The list of metrics and their descriptions, so Netdata Cloud knows what each node monitors.
+### ❌ What Is NOT Transmitted
+- **Raw metric values or time-series data** — your metrics are never stored in Netdata Cloud
+- **Log files or application data**
+- **Sensitive system information** beyond what is needed for display and coordination
 
-### ❌ What Is NOT Transmitted or Stored
-
-- **Your raw metrics and monitoring data are never stored in Netdata Cloud.** All historical data remains on your own servers.
-- **Log data** is never sent to the cloud.
-- When you view a chart in Netdata Cloud, the data you see is fetched live from your Agent on demand — it is not pulled from a cloud database.
-
-> Your monitoring data belongs to you and stays within your infrastructure. Netdata Cloud stores only the minimal metadata needed to coordinate access and display your infrastructure overview.
+> Your monitoring data stays within your own infrastructure. Netdata Cloud stores only the minimal metadata required for coordination and access control.
 
 ---
 
-## Checking Your ACLK Connection Status
+## Checking the ACLK Connection Status
 
-### From the Command Line
+If you want to confirm that your agent is successfully connected to Netdata Cloud, you have two options.
 
-Run the following command on any server running a Netdata Agent:
+### Option 1: Using the Web Interface
+
+Open a browser and go to:
+
+```
+http://YOUR-NODE-IP:19999/api/v3/info
+```
+
+Replace `YOUR-NODE-IP` with the IP address or hostname of your agent. Look for the `cloud` section in the response — it shows the current connection status and any issues.
+
+### Option 2: Using the Command Line
+
+Run the following command on the machine where your agent is installed:
 
 ```bash
 sudo netdatacli aclk-state
 ```
 
-You will see output similar to this:
+A successful, healthy connection looks like this:
 
 ```
 ACLK Available: Yes
@@ -90,172 +84,101 @@ Online: Yes
 Used Cloud Protocol: New
 ```
 
-**What to look for:**
-- **ACLK Available: Yes** — The ACLK feature is built into this Agent.
-- **Claimed: Yes** — This Agent has been successfully connected to a Netdata Cloud Space.
-- **Online: Yes** — The Agent is currently connected to Netdata Cloud. If this shows `No`, the Agent is disconnected.
-
-### From a Web Browser
-
-Open your browser and go to `http://YOUR-SERVER-IP:19999/api/v3/info` (replace `YOUR-SERVER-IP` with your server's address). Find the `cloud` section in the result — it shows the current connection state and any error information.
+If `Online` shows `No`, your agent is not connected. Use the troubleshooting steps below to resolve the issue.
 
 ---
 
-## Understanding Node Connection States
+## Troubleshooting Connection Problems
 
-Once connected, Netdata Cloud displays each node with one of these states:
+### Check the Agent Logs
 
-| State | What It Means |
-|-------|--------------|
-| **Live** | The node is connected and sending real-time data |
-| **Stale** | The node has disconnected, but a Parent agent still has its historical data queryable |
-| **Offline** | The node is disconnected and no data is accessible |
-| **Unseen** | The node was added to your Space but has never successfully connected |
+If your node is not connecting, check the agent's log file and search for entries containing `CLAIM`. These entries describe what happened during the connection attempt and why it may have failed.
 
-**How quickly does a disconnection appear?**
+### Common Issues and Solutions
 
-- If a node shuts down gracefully: Netdata Cloud detects it **immediately**.
-- If a node crashes or loses network: Detection takes approximately **60 seconds** (based on connection keep-alive checks).
-- The Netdata Cloud dashboard typically reflects state changes within **1–2 minutes**.
+| Problem | What to Do |
+|---|---|
+| Agent installed via an unsupported package manager | Reinstall Netdata using the official installation method from the Netdata documentation |
+| Insufficient permissions when running the setup script | Re-run the setup with root privileges, or as the same user that runs the Netdata Agent |
+| Old Linux distribution (Ubuntu 14.04, Debian 8, CentOS 6) with outdated security libraries | Reinstall using a Netdata static build, which includes an up-to-date security library |
+| Firewall blocking outbound traffic | Ensure port 443 is open and the three Netdata Cloud domains are allowlisted |
 
 ---
 
-## Setting Up a Proxy for Restricted Networks
+## Connecting Through a Proxy
 
-If your servers cannot connect directly to the internet, you can route the ACLK connection through a proxy server. This is common in corporate environments or secured data centers.
-
-### Supported Proxy Types
-
-| Type | Format |
-|------|--------|
-| HTTP proxy | `http://host:port` or `http://username:password@host:port` |
-| SOCKS5 proxy | `socks5://host:port` or `socks5://username:password@host:port` |
-| SOCKS5H proxy (remote DNS) | `socks5h://host:port` |
-
-> **SOCKS5 vs SOCKS5H:** Use `socks5://` if your Agent server can resolve DNS itself. Use `socks5h://` if you want the proxy to handle DNS resolution (useful when the Agent cannot reach external DNS).
+If your environment restricts direct outbound internet access, you can route the ACLK connection through a proxy server. Netdata supports **HTTP proxies**, **SOCKS5 proxies**, and **SOCKS5H proxies**.
 
 ### How to Configure a Proxy
 
-**Option 1 – Configuration File (Recommended)**
+You can set a proxy when connecting your agent to Netdata Cloud. This is done through your agent's claim configuration file or via environment variables.
 
-Create or edit the file at `/etc/netdata/claim.conf` and add your proxy under the `[global]` section:
+**Using the configuration file** (located at `/etc/netdata/claim.conf`):
 
-```ini
+```
 [global]
-   url = https://app.netdata.cloud
-   token = YOUR_SPACE_TOKEN
-   proxy = http://username:password@myproxy.company.com:8080
+   proxy = http://username:password@myproxy:8080
 ```
 
-After saving, either restart the Netdata Agent or run:
-```bash
-sudo netdatacli reload-claiming-state
-```
+**Supported proxy formats:**
 
-**Option 2 – Environment Variables (Container/CI Deployments)**
+| Format | Description |
+|---|---|
+| *(empty or `none`)* | No proxy — connect directly to the internet |
+| `env` | Use the `http_proxy` environment variable (this is the default behavior) |
+| `http://[user:pass@]host:port` | Connect through an HTTP proxy |
+| `socks5://[user:pass@]host:port` | Connect through a SOCKS5 proxy (DNS resolved on your agent) |
+| `socks5h://[user:pass@]host:port` | Connect through a SOCKS5 proxy (DNS resolved on the proxy server) |
 
-Set the following environment variable before starting the Agent:
+### Proxy Security
 
-| Variable | Description |
-|----------|-------------|
-| `NETDATA_CLAIM_PROXY` | The full proxy URL (e.g., `http://proxy.company.com:3128`) |
+Even when routing through a proxy, **your data remains end-to-end encrypted**. Here is how:
 
-**Option 3 – System Proxy Environment Variable**
+1. Your agent connects to the proxy server.
+2. The agent asks the proxy to create a direct TCP tunnel to Netdata Cloud.
+3. The proxy passes raw traffic without reading it.
+4. Your agent then establishes a full TLS/SSL encrypted connection directly with Netdata Cloud through that tunnel.
 
-By default, the Agent also respects the system-level `http_proxy` environment variable. To use it, make sure the `proxy` setting in `claim.conf` is set to `env` (which is the default).
-
-### Security Note on Proxies
-
-Even when using a proxy, your data remains end-to-end encrypted. Here is why:
-
-1. The Agent connects to the proxy using a plain TCP connection.
-2. The Agent then asks the proxy to open a secure tunnel to Netdata Cloud (using HTTP CONNECT or SOCKS5 tunneling).
-3. Through that tunnel, the Agent establishes a full TLS/SSL encrypted session directly with Netdata Cloud.
-4. The proxy only sees encrypted traffic — it cannot read your monitoring data.
+The proxy only ever sees encrypted data — it cannot read your monitoring information.
 
 ---
 
-## Troubleshooting ACLK Connection Problems
+## Managing Your Cloud Connection
 
-### Quick Diagnostic Checklist
+### Reconnecting an Agent
 
-If a node shows as **Offline** or **Unseen** in Netdata Cloud, work through these steps:
+If you need to disconnect and reconnect an agent (for example, to move it to a different Space), you can remove the connection credentials by deleting the agent's cloud configuration directory, then restarting the agent.
 
-1. **Confirm the Agent is running**
-   ```bash
-   systemctl status netdata
-   ```
-
-2. **Check ACLK status**
-   ```bash
-   sudo netdatacli aclk-state
-   ```
-   Look at the **Online** and **Claimed** fields.
-
-3. **Test outbound connectivity to Netdata Cloud**
-   From the server, try:
-   ```bash
-   curl -v https://app.netdata.cloud
-   ```
-   If this fails, the issue is a network or firewall restriction.
-
-4. **Check Agent logs for ACLK messages**
-   ```bash
-   journalctl -u netdata MESSAGE_ID=acb33cb9-5778-476b-aac7-02eb7e4e151d
-   ```
-   Or search broadly:
-   ```bash
-   journalctl -u netdata | grep -i aclk
-   ```
-
-5. **Check the browser API endpoint**
-   Open `http://YOUR-SERVER:19999/api/v3/info` and inspect the `cloud` section for error details.
-
-### Common Problems and Solutions
-
-| Problem | Likely Cause | Solution |
-|---------|-------------|----------|
-| Node shows **Unseen** | Agent never reached Netdata Cloud | Verify outbound access to `app.netdata.cloud`, `api.netdata.cloud`, and `mqtt.netdata.cloud` on port 443 |
-| Node shows **Offline** unexpectedly | Network interruption or Agent stopped | Restart the Agent; check network and firewall rules |
-| Connection works, but keeps dropping | Proxy not configured; firewall blocking WebSocket | Configure proxy settings if behind a firewall; ensure port 443 WebSocket traffic is not blocked |
-| Claiming failed (unsupported installation) | Agent installed via unsupported package manager | Reinstall Netdata using the official installation method |
-| Cannot connect on older OS (Ubuntu 14.04, Debian 8, CentOS 6) | Outdated OpenSSL version | Reinstall Netdata using the static build package, which includes an up-to-date OpenSSL |
-
----
-
-## Reconnecting or Resetting the ACLK Connection
-
-### Reconnecting a Linux Agent
-
-If you need to remove an Agent from your Space and reconnect it (for example, to move it to a different Space), delete its stored credentials and restart:
-
+**On Linux:**
 ```bash
 cd /var/lib/netdata
 sudo rm -rf cloud.d/
-sudo systemctl restart netdata
 ```
 
-> If your Agent has a `claim.conf` file or environment variables configured, it will automatically reconnect using those settings when restarted.
+After restarting the agent, it will re-connect automatically if a valid `claim.conf` or claiming environment variables are present.
 
-### Regenerating Your Space's Claim Token
+**On Docker:** Stop and remove the container, delete the `cloud.d/` directory and the agent's unique ID file from the data volume, then re-run the agent with the new connection token.
 
-If your claim token may have been compromised, you can generate a new one. Only Space Administrators can do this.
+### Regenerating Your Connection Token
 
-1. In Netdata Cloud, navigate to the screen that shows the node connection command (Space Settings → Nodes, or the Nodes tab, or the Integrations page).
+If your Space's connection (claiming) token is ever compromised, an Administrator of your Space can generate a new one from the Netdata Cloud dashboard. Once regenerated, the previous token is immediately invalidated.
+
+**Steps:**
+1. Go to any screen in Netdata Cloud that shows the node connection command (such as Space or Room settings → Nodes, or the Nodes tab → Add nodes).
 2. Click **"Regenerate token"**.
-3. Your old token is immediately invalidated. Any new Agents must use the new token to connect.
+3. Use the new token for any future agent connections.
+
+> Only Space **Administrators** can regenerate the connection token.
 
 ---
 
 ## Summary
 
 | Topic | Key Point |
-|-------|-----------|
-| **Connection direction** | Outbound only — your Agent connects to the cloud, not the other way around |
-| **Port used** | 443 (standard HTTPS port) |
-| **Protocol** | MQTT over encrypted WebSocket (WSS) |
-| **Data stored in cloud** | Metadata and alert state only — no raw metrics |
-| **Your data location** | Always on your own servers |
-| **Proxy support** | HTTP, SOCKS5, and SOCKS5H proxies supported |
-| **Encryption** | End-to-end TLS/SSL even through proxies |
-| **Connection check** | Run `sudo netdatacli aclk-state` on the Agent server |
+|---|---|
+| Connection direction | Outbound only — your agents initiate the connection |
+| Port used | 443 (standard HTTPS/WebSocket) |
+| Encryption | End-to-end TLS/SSL, including through proxies |
+| Metric storage in cloud | None — all metric data stays on your infrastructure |
+| Configuration required | None by default — ACLK activates automatically when you connect a node |
+| Proxy support | HTTP, SOCKS5, and SOCKS5H proxies are all supported |

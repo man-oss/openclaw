@@ -2,200 +2,213 @@
 
 ## Overview
 
-Netdata's service discovery feature automatically finds the services, containers, and applications running in your environment — so you don't have to manually tell Netdata what to monitor. As soon as a new service appears (or disappears), Netdata detects the change and adjusts its monitoring accordingly, in real time.
+Netdata's Service Discovery feature automatically finds and monitors services running in your environment — whether they are running directly on a host, inside Docker containers, or across a Kubernetes cluster. Instead of manually telling Netdata about every service, Service Discovery continuously scans your environment, detects what is running, and begins collecting metrics automatically.
 
-This guide explains how service discovery works, what types of environments it supports, and how you can customize it to fit your infrastructure.
-
----
-
-## What Service Discovery Does
-
-When Netdata starts, it begins scanning your environment for services to monitor. This process is continuous — Netdata watches for new services appearing and old ones going away, keeping your monitoring up to date without any manual intervention.
-
-Here's what happens automatically:
-
-- **Detection**: Netdata identifies running services, containers, or pods
-- **Classification**: Each discovered service is labeled with descriptive tags (e.g., "web server", "database", "container")
-- **Configuration**: Netdata generates the right monitoring configuration for each service based on matching rules
-- **Live updates**: As your environment changes, monitoring adapts in real time
+This guide explains how Service Discovery works, what environments it supports, and how you can customize its behavior to suit your setup.
 
 ---
 
-## How Discovery Is Organized: Targets and Target Groups
+## What Service Discovery Does and Why It Matters
 
-Netdata organizes everything it discovers using a two-level structure:
+When you run Netdata in a dynamic environment — where containers start and stop, new Kubernetes pods come online, or services change — manually configuring each one is impractical. Service Discovery solves this by:
 
-### Targets
-A **target** is a single monitorable item — for example, one running container, one Kubernetes pod, or one network port. Every target has:
+- **Automatically detecting** services and endpoints as they appear or disappear
+- **Continuously updating** monitoring configuration without requiring manual restarts
+- **Removing stale targets** when services shut down, keeping your monitoring clean and accurate
+- **Applying the right monitoring rules** to each discovered service based on what type it is
 
-- **A unique identity** — a stable ID that lets Netdata track it even when it restarts
-- **A fingerprint** — a hash value that detects when the target's properties change
-- **Tags** — descriptive labels that describe what kind of service this is (see the [Tags](#using-tags-to-classify-services) section below)
-
-### Target Groups
-A **target group** is a collection of related targets that all come from the same discovery source. For example, all containers on a Docker host form one target group, or all pods in a Kubernetes namespace form another.
-
-Each target group has a **provider** (what found it) and a **source** (where it came from). This lets Netdata manage discoveries from multiple sources independently.
+For example, if a new Redis container starts on your host, Service Discovery will detect it, recognize it as a Redis instance, and automatically begin collecting the appropriate metrics — all without any manual steps from you.
 
 ---
 
-## Supported Discovery Methods
+## How Service Discovery Works: The Discoverer and Target Model
 
-Netdata supports three main ways to discover services:
+Netdata's Service Discovery is built around two simple concepts: **Discoverers** and **Targets**.
 
-### 1. Kubernetes Discovery
-In Kubernetes environments, Netdata watches the Kubernetes API for pods, services, and other resources. It reads pod labels and annotations to classify what each workload is running.
+### Discoverers
 
-**What it discovers automatically:**
-- All pods across namespaces
-- Pod labels and annotations (used for matching rules)
-- Container names and images within pods
+A **Discoverer** is a scanner that watches a specific part of your environment for services. Each discoverer runs continuously in the background and reports back whenever something changes — a new service appears, an existing one changes, or one disappears.
 
-### 2. Docker Discovery
-On hosts running Docker, Netdata monitors the Docker daemon directly to detect running containers.
+Netdata comes with discoverers built for three environments:
 
-**What it discovers automatically:**
-- Running containers
-- Container labels
-- Exposed ports and network settings
+| Discovery Type | What It Scans |
+|---------------|---------------|
+| **File-based** | Configuration files you place in Netdata's configuration directories |
+| **Kubernetes** | Pods, services, and endpoints in your Kubernetes cluster |
+| **Docker** | Running containers on the local Docker host |
 
-### 3. File-Based Discovery
-For traditional (non-containerized) environments, Netdata can discover services by scanning for configuration files or by reading target definitions from files on disk.
+Each discoverer produces results and sends them onward to be processed by Netdata's monitoring pipeline.
 
-This is useful for:
-- Bare-metal hosts running services directly
-- Custom or non-standard setups
-- Providing static lists of services to monitor
+### Targets and Target Groups
 
----
+When a discoverer finds a service, it creates a **Target** — a representation of that service. Each target has:
 
-## Using Tags to Classify Services
+- A **unique identity** so Netdata can tell targets apart even if details change
+- **Tags** that describe what kind of service it is (for example: `web`, `database`, `redis`)
+- A **provider** label that identifies which discoverer found it (e.g., `kubernetes`, `docker`, `file`)
+- A **source** identifier that pinpoints exactly where in the environment the target came from
 
-Tags are the key mechanism Netdata uses to decide *how* to monitor something once it's discovered. Every discovered target carries a set of tags — words that describe what it is.
-
-**How tags work:**
-
-- Tags are simple words or key=value pairs (for example: `web`, `nginx`, `port=80`, `env=production`)
-- Tags are **additive by default** — you can keep layering more specific tags on top of general ones
-- A tag starting with a `-` (dash) **removes** that label (for example: `-web` would remove the `web` tag)
-
-**Example tag flow:**
-
-1. A Docker container is discovered → it gets a base tag: `container`
-2. A matching rule sees the image is `nginx` → adds `web` and `nginx` tags
-3. Another rule checks the port → adds `port=80`
-4. The final tag set `{container, web, nginx, port=80}` is used to select the right monitoring module
-
-Tags let you write precise rules: "monitor everything tagged `web` and `nginx` using the Nginx module."
+Targets are grouped into **Target Groups** — collections of related targets that come from the same source. For instance, all the containers from a specific Docker network might form one target group.
 
 ---
 
-## Discovery Pipelines and Configuration Files
+## Supported Discovery Environments
 
-Netdata's discovery system works through **pipelines**. Each pipeline is defined by a configuration file and has two main parts:
+### File-Based Discovery
 
-### 1. The Discoverer
-Specifies *where* to find services — Kubernetes, Docker, or files. There is exactly one discoverer per pipeline.
+File-based discovery reads configuration files that you place in Netdata's configuration directories. This is the most direct way to tell Netdata about specific services — you write a configuration file describing a service and its monitoring rules, and Netdata picks it up automatically.
 
-### 2. Service Rules
-Specifies *what to do* with discovered targets. Each rule has:
-- **`id`** — a name for the rule (for logging and diagnostics)
-- **`match`** — an expression that selects which targets this rule applies to (based on tags and properties)
-- **`config_template`** (optional) — a template that generates the monitoring configuration for matching targets
+**When to use it:** Ideal for services running directly on a host (not in containers), or when you want to manually define monitoring for specific endpoints.
+
+Netdata watches the configuration directories continuously. If you add, modify, or remove a file, the change takes effect without restarting Netdata.
+
+### Kubernetes Discovery
+
+Kubernetes discovery connects to the Kubernetes API and watches for pods, services, and endpoints across your cluster. It automatically:
+
+- Detects new pods as they are scheduled
+- Monitors pod labels and annotations to determine what kind of service is running
+- Removes monitoring when pods terminate
+
+**When to use it:** Any Kubernetes environment. This is the recommended approach for containerized workloads on Kubernetes.
+
+### Docker Discovery
+
+Docker discovery monitors the Docker daemon on the local machine. It detects running containers and collects details like container names, image names, and labels to identify what each container is running.
+
+**When to use it:** When running services in Docker on a single host or small cluster without Kubernetes.
 
 ---
 
-## Example Pipeline Configuration
+## Understanding Tags: Scoping and Classifying Services
 
-Here is what a typical discovery configuration file looks like:
+**Tags** are labels that Netdata attaches to each discovered target. They play a central role in determining which monitoring rules apply to which services.
+
+### How Tags Work
+
+Tags are simple words like `web`, `redis`, `docker`, `kubernetes`, or `prod`. A target can have multiple tags. When Netdata's monitoring rules evaluate a discovered target, they use these tags to decide:
+
+- **Should this target be monitored?** (Does it have the right tags?)
+- **Which monitoring template should apply?** (Which tags match this rule?)
+
+### Tag Operations
+
+Tags support two operations:
+
+- **Adding a tag** — simply write the tag name (e.g., `redis`)
+- **Removing a tag** — prefix with a dash (e.g., `-redis`)
+
+This allows you to layer tag adjustments as targets pass through classification rules, narrowing down or expanding which monitoring configurations apply.
+
+### Tag Rules
+
+Tag names must start with a letter and can contain letters, numbers, and the characters `=`, `_`, and `.`. For example: `web`, `db`, `env=prod`, `tier.frontend` are all valid tags.
+
+---
+
+## How Configuration Files Work
+
+Each service discovery setup is driven by a **configuration file** (in YAML format) that you place in Netdata's configuration directory. The file defines:
+
+1. **A name** for this discovery pipeline (must be unique)
+2. **Which discoverer to use** (`file`, `k8s`, or `docker`)
+3. **Service rules** that describe how to match discovered targets and what monitoring to apply
+
+### Basic Configuration Structure
 
 ```yaml
-name: my-docker-services
-
+name: my-redis-monitoring
 discoverer:
   docker: {}
-
 services:
-  - id: nginx-containers
-    match: '{{ eq .Image "nginx" }}'
-    config_template: |
-      url: http://{{ .Address }}/stub_status
-
   - id: redis-containers
     match: '{{ eq .Image "redis" }}'
     config_template: |
-      address: {{ .Address }}
+      # monitoring configuration for this service
 ```
 
-**What this does:**
-- Uses Docker discovery to find all running containers
-- If a container is running the `nginx` image, monitors its stub status endpoint
-- If a container is running the `redis` image, monitors it as a Redis instance
+### Key Fields
+
+| Field | Purpose |
+|-------|---------|
+| `name` | A unique name for this discovery pipeline |
+| `discoverer` | Which discovery method to use and its settings |
+| `services` | Rules that match targets and assign monitoring configurations |
+| `disabled` | Set to `true` to temporarily turn off this pipeline |
+
+### Service Rules
+
+Each entry in the `services` list has:
+
+- **`id`** — A label for this rule (used in logs and diagnostics)
+- **`match`** — A condition that determines which discovered targets this rule applies to (uses Go template expressions against the target's properties)
+- **`config_template`** — (Optional) The monitoring configuration to apply when a target matches
+
+If a target matches a rule's `match` expression, Netdata applies the associated `config_template` to begin monitoring that service.
+
+### Multiple Configuration Files
+
+You can have as many configuration files as you need. Netdata processes them all in parallel. If two files define a pipeline with the same name, Netdata resolves the conflict using a priority system based on where the file came from (built-in defaults have lower priority than files you create yourself — your custom configurations always win).
 
 ---
 
-## How Configuration Files Are Loaded
+## Managing Discovery Pipelines
 
-Netdata automatically watches a configuration directory for discovery pipeline files. You can:
+### Enabling and Disabling Pipelines
 
-- **Add a new file** → Netdata picks it up and starts a new discovery pipeline
-- **Edit an existing file** → Netdata updates the pipeline with the new settings
-- **Delete or empty a file** → Netdata removes that pipeline and stops monitoring those targets
-
-Pipelines can also be temporarily disabled by adding `disabled: true` to the configuration file:
+You can disable a specific pipeline without deleting its configuration file by adding `disabled: true` to the file:
 
 ```yaml
-name: my-pipeline
+name: my-service
 disabled: true
 discoverer:
   docker: {}
+services:
+  - id: my-rule
+    match: '{{ eq .Name "myapp" }}'
 ```
 
----
+Removing the `disabled` field (or setting it to `false`) re-enables the pipeline. Netdata picks up the change automatically.
 
-## Priority Between Configuration Sources
+### Live Updates
 
-When multiple configuration files define the same pipeline, Netdata applies a priority system:
+Netdata watches your configuration directories continuously. You do not need to restart Netdata when you:
 
-| Source Type | Priority |
-|-------------|----------|
-| User-defined configurations | Highest |
-| Stock (built-in) configurations | Lower |
+- Add a new configuration file
+- Edit an existing configuration file
+- Delete a configuration file
 
-A higher-priority configuration always wins. If a user-defined file conflicts with a built-in default, the user's version takes effect. If the same pipeline is already running and the new configuration has equal or lower priority, the running version is kept for stability.
-
----
-
-## Managing Discovery Through the Netdata Interface
-
-Beyond configuration files, Netdata exposes discovery settings through its dynamic configuration system, accessible from the Netdata UI. From there you can:
-
-- **View** all active discovery pipelines
-- **Enable or disable** individual pipelines without editing files
-- **Update** pipeline settings interactively
-- **Test** a pipeline configuration before applying it
-
-When a new pipeline is discovered from a configuration file, Netdata may wait briefly (up to 5 seconds) for you to confirm whether to enable or disable it — giving you a chance to review before monitoring begins.
+Changes take effect within seconds.
 
 ---
 
-## Quick Reference: Key Concepts
+## Practical Tips
 
-| Concept | What It Means |
-|---|---|
-| **Target** | A single discovered service or container |
-| **Target Group** | A collection of targets from the same source |
-| **Discoverer** | The mechanism that finds targets (Kubernetes, Docker, or file) |
-| **Tags** | Labels on a target used to select monitoring rules |
-| **Pipeline** | A configuration combining one discoverer with service rules |
-| **Service Rule** | A match expression + configuration template applied to targets |
+### Start with the Right Discoverer
+
+Choose the discoverer that matches your environment:
+- Running services directly on a Linux host? Use **file-based** discovery or rely on Netdata's built-in auto-detection.
+- Using Docker on a single machine? Use the **docker** discoverer.
+- Running Kubernetes? Use the **kubernetes** (k8s) discoverer.
+
+### Use Tags to Filter Precisely
+
+If Netdata is picking up services you don't want to monitor, use tag-based filtering in your service rules. For example, you can write a `match` expression that only applies to containers with a specific Docker label, a certain image name, or a specific Kubernetes namespace.
+
+### One Pipeline Per Concern
+
+Keep configuration files focused. Rather than one large file with dozens of rules, create separate files for different service types (one for databases, one for web servers, etc.). This makes troubleshooting easier and allows you to enable or disable monitoring categories independently.
+
+### Check the Netdata Dashboard
+
+After making changes to discovery configurations, navigate to the **Netdata Dashboard** and look at the **Collected Metrics** section to confirm new services are appearing. If a service doesn't show up, check that:
+
+1. The discoverer type matches your environment
+2. The `match` expression in your service rule correctly evaluates against the target's properties
+3. The pipeline is not marked as `disabled`
 
 ---
 
-## Tips for Customizing Discovery
+## Summary
 
-- **Narrow down what gets monitored** by writing specific `match` expressions using container image names, labels, or port numbers
-- **Remove unwanted tags** using the `-tagname` prefix to prevent false matches
-- **Use multiple pipelines** to organize different environments (for example, one pipeline for Kubernetes, another for Docker)
-- **Disable built-in pipelines** by creating a user configuration file with `disabled: true` if a default pipeline doesn't suit your environment
-- **Combine tag layers** to build precise, readable matching rules — start broad (detect all containers) and get more specific (detect only `nginx` containers on port 80)
+Netdata's Service Discovery removes the manual work of configuring monitoring for dynamic environments. By combining continuously running discoverers (for files, Docker, and Kubernetes), a flexible tagging system, and YAML-based configuration files, it automatically finds your services and begins monitoring them. You stay in control through configuration files that let you customize which services are monitored, how they are identified, and which monitoring rules apply — all without restarting Netdata.

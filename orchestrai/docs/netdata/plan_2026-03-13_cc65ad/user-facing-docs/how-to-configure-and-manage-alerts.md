@@ -1,81 +1,43 @@
-# How to Configure and Manage Alerts in Netdata
+---
 
-Netdata automatically monitors your systems and fires alerts the moment something looks wrong — no manual setup required to get started. This guide teaches you how alerts work, how to customize them for your environment, and how to manage alert noise so you only hear about what truly matters.
+## Understanding How Default Alerts Work
+
+Netdata automatically loads a library of built-in alerts that cover the most common warning scenarios across your infrastructure. These alerts are ready to go without any configuration.
+
+**Where default alerts come from:** Netdata ships with a collection of pre-configured alert files stored in `/usr/lib/netdata/conf.d/health.d/`. These files cover areas like CPU usage, disk space, memory, network interfaces, database performance, container health, and many more. Every time Netdata starts, it reads these files and begins monitoring your system against their defined thresholds.
+
+**Two types of alerts:** Netdata uses two building blocks:
+
+| Type | What it does |
+|------|--------------|
+| **Alert** | Monitors one specific chart or instance (e.g., a single disk) |
+| **Template** | Automatically monitors *all* instances of a given type (e.g., every disk on your system) |
+
+Templates are the reason Netdata can alert on a brand-new disk the moment it appears — no extra setup required.
+
+**Alert states:** Every alert moves through the following states:
+
+| State | What it means |
+|-------|---------------|
+| **Clear** | Everything is normal |
+| **Warning** | Something needs attention |
+| **Critical** | Urgent action required |
+| **Undefined** | Data couldn't be retrieved |
+
+**Important:** Default alert files are replaced during Netdata upgrades. Any changes you want to keep must be made in your own configuration files (in `/etc/netdata/health.d/`), which are never overwritten during upgrades.
 
 ---
 
-## How Default Alerts Work
+## Anatomy of an Alert Configuration
 
-The moment Netdata starts collecting data from your system, it begins watching hundreds of metrics against a built-in library of pre-configured health rules. These cover areas like:
-
-- **CPU, RAM, and disk usage** — warns before you run out of resources
-- **Network activity** — detects packet drops, high utilization, and interface errors
-- **Application health** — monitors databases, web servers, containers, and more
-- **System events** — catches out-of-memory kills, swap exhaustion, and hardware anomalies
-
-These built-in rules are called **stock alerts**. They use sensible defaults tuned for most environments and activate automatically when Netdata detects the relevant data source. You do not need to turn anything on.
-
-### Alert States
-
-Every alert in Netdata can be in one of these states:
-
-| State | Meaning |
-|---|---|
-| **Clear** | Everything is normal — no action needed |
-| **Warning** | Something is approaching a problem threshold — worth watching |
-| **Critical** | A serious threshold has been crossed — action likely needed |
-
-Netdata moves alerts between these states automatically as your metrics change, and sends you a notification each time the state changes.
-
----
-
-## Viewing Active Alerts
-
-### On the Local Dashboard
-
-Open your Netdata dashboard in a browser (typically at `http://your-server:19999`). The **Alerts** section in the top navigation shows a count of active warnings and critical alerts. Clicking it takes you to a full list of firing alerts, each showing:
-
-- The name of the alert and which metric it is watching
-- The current value that triggered it
-- When the alert started
-- A short description of what it means
-
-### In Netdata Cloud
-
-If your nodes are connected to Netdata Cloud, navigate to the **Alerts** tab in the left sidebar. Here you can:
-
-- See alerts across **all of your nodes** in one view, rather than node by node
-- Filter by alert status, node, or time period
-- Click into any alert to see its full history and the chart it is watching
-- Acknowledge alerts to signal that your team is aware of the issue
-
----
-
-## Customizing Alert Thresholds
-
-The built-in thresholds may not be right for every environment. A server running a memory-hungry database should not warn at the same RAM percentage as a lightweight monitoring host. Netdata makes it straightforward to raise or lower these values.
-
-### Where Alert Rules Live
-
-Each alert rule is defined in a plain-text configuration file. Stock rules live in a read-only system folder; your customizations go into your **user configuration folder** (typically `/etc/netdata/health.d/`). Changes you make there survive Netdata upgrades.
-
-To safely edit a built-in alert file, use the `edit-config` helper from your Netdata configuration directory:
-
-```bash
-sudo ./edit-config health.d/cpu.conf
-```
-
-This copies the stock file into your user folder and opens it for editing.
-
-### Reading an Alert Rule
-
-Here is a real example — the default CPU usage alert that comes with Netdata:
+Every alert — whether built-in or custom — follows the same structure. Here is a real example from Netdata's built-in CPU alert:
 
 ```
 template: 10min_cpu_usage
       on: system.cpu
    class: Utilization
     type: System
+component: CPU
   lookup: average -10m unaligned of user,system,softirq,irq,guest
    units: %
    every: 1m
@@ -83,63 +45,94 @@ template: 10min_cpu_usage
     crit: $this > (($status == $CRITICAL) ? (85) : (95))
    delay: down 15m multiplier 1.5 max 1h
  summary: CPU utilization
-    info: Average cpu utilization for the last 10 minutes
+    info: Average cpu utilization for the last 10 minutes (excluding iowait, nice and steal)
       to: sysadmin
 ```
 
-What each line does in plain language:
+Here is what each key line does:
 
-| Setting | What It Controls |
-|---|---|
-| `template` | The name of this alert rule. Using `template` means it applies to every matching chart automatically. |
-| `on` | Which chart or metric to watch (`system.cpu` = overall CPU usage). |
-| `lookup` | How to process the data — here, it takes the average of the last 10 minutes of CPU use. |
-| `units` | The unit for the value being checked (percent). |
-| `every` | How often to re-evaluate the rule (every 1 minute). |
-| `warn` | The expression that triggers a Warning. The `? :` pattern creates a buffer zone so the alert does not flicker — CPU must drop below 75% to clear a warning, but must exceed 85% to first trigger one. |
-| `crit` | Same idea for Critical — triggers at 95%, clears at 85%. |
-| `delay` | Waits 15 minutes after recovery before clearing the alert, to avoid re-alerting on brief recoveries. |
-| `repeat` | If defined, resends the notification at a set interval while the alert remains active. |
-| `info` | A human-readable description shown in notifications and dashboards. |
-| `to` | Which notification role receives the alert (e.g., `sysadmin`, `silent`). |
+### `alarm` / `template` — The Name
+This is the first line of every alert and defines whether it applies to one chart (`alarm`) or all charts of a given type (`template`). Names can only contain letters, numbers, periods (`.`), and underscores (`_`).
 
-### Adjusting a Threshold
+### `on` — What to Watch
+Tells Netdata which metric to monitor. For **alerts**, use the exact chart name (like `system.cpu`). For **templates**, use the chart's context (like `disk.space`), which makes the alert apply to every disk automatically.
 
-To change the CPU warning from 85% to 75%, edit the `warn` and `crit` lines:
+> **Tip:** To find a chart's name, look at the chart title on your dashboard. To find its context, hover over the date on any chart — the tooltip shows something like `proc:/proc/diskstats, disk.io`. The part after the comma (`disk.io`) is the context.
 
+### `lookup` — How to Read the Data
+Defines what data to pull from Netdata's database and how to process it before comparing to thresholds.
+
+**Example:** `lookup: average -10m unaligned of user,system,softirq,irq,guest`
+
+This reads the last 10 minutes of data across the listed CPU dimensions and calculates the average.
+
+Common lookup methods include `average`, `min`, `max`, and `sum`. The result of the lookup is always available as `$this`.
+
+### `every` — How Often to Check
+Sets the check frequency. For example, `every: 1m` checks the metric once per minute. Supported units: `s` (seconds), `m` (minutes), `h` (hours), `d` (days).
+
+### `warn` and `crit` — The Thresholds
+These expressions define when an alert becomes a warning or critical. They evaluate to true or false.
+
+**Simple example:**
 ```
-warn: $this > (($status >= $WARNING)  ? (60) : (75))
-crit: $this > (($status == $CRITICAL) ? (75) : (85))
+warn: $this > 80
+crit: $this > 95
 ```
 
-Save the file, then apply your change without restarting Netdata:
-
-```bash
-sudo netdatacli reload-health
+**With hysteresis (recommended):** The conditional pattern `(($status >= $WARNING) ? (lower) : (higher))` creates a "sticky" threshold that prevents constant flapping when a value hovers near the trigger point:
 ```
+warn: $this > (($status >= $WARNING)  ? (75) : (85))
+crit: $this > (($status == $CRITICAL) ? (85) : (95))
+```
+
+This means: alert triggers at 85%, but won't clear until the value drops below 75%. This prevents repeated notifications when a metric fluctuates around the threshold.
+
+### `delay` — Slowing Down Notifications
+Controls how long Netdata waits before sending a notification when an alert state changes. This prevents notification floods during transient spikes.
+
+**Example:** `delay: down 15m multiplier 1.5 max 1h`
+
+| Parameter | What it does |
+|-----------|--------------|
+| `up U` | Wait before notifying on a state increase (e.g., Clear → Warning) |
+| `down D` | Wait before notifying on a state decrease (e.g., Critical → Warning) |
+| `multiplier M` | If the alert changes state again during the delay, multiply the wait time |
+| `max X` | The maximum total delay allowed |
+
+### `repeat` — Ongoing Reminders
+Tells Netdata how often to re-send notifications while an alert stays in a warning or critical state.
+
+**Example:** `repeat: warning 120s critical 10s`
+
+This re-notifies every 2 minutes during a warning, and every 10 seconds during a critical event.
+
+### `info` and `summary`
+- **`summary`** — A short title that appears in dashboards and notifications (e.g., `CPU utilization`)
+- **`info`** — A longer explanation of what the alert monitors, shown in notification messages
+
+### `to` — Who Gets Notified
+Specifies which role (or roles) receives notifications when this alert fires. The default is `sysadmin`. Set to `silent` to stop all notifications for this alert while keeping monitoring active.
 
 ---
 
 ## Creating a Custom Alert
 
-You can write new alerts for any metric Netdata collects. Here is a step-by-step example that monitors RAM usage and warns when it climbs above 80%.
+You can write your own alerts for any metric Netdata collects. The safest approach is to create a new file in `/etc/netdata/health.d/` — files here are never overwritten by upgrades.
 
-### Step 1 — Create a new configuration file
+### Step-by-Step: Monitor RAM Usage
 
-From your Netdata configuration directory:
-
+**Step 1:** Open a terminal on your server and create a new alert file:
 ```bash
 sudo touch health.d/ram-usage.conf
 sudo ./edit-config health.d/ram-usage.conf
 ```
+(Run this from your Netdata config directory — typically `/etc/netdata`.)
 
-### Step 2 — Write the alert rule
-
-Paste this into the file:
-
+**Step 2:** Add your alert definition:
 ```
-alarm: ram_usage
-   on: system.ram
+ alarm: ram_usage
+    on: system.ram
 lookup: average -1m percentage of used
  units: %
  every: 1m
@@ -148,200 +141,214 @@ lookup: average -1m percentage of used
   info: The percentage of RAM being used by the system.
 ```
 
-**What each part does:**
+**What each line means:**
+| Line | Purpose | This example |
+|------|---------|--------------|
+| `alarm: ram_usage` | Name this alert | `ram_usage` |
+| `on: system.ram` | Watch the RAM chart | `system.ram` |
+| `lookup` | Get the 1-minute average of the "used" dimension, as a percentage | Last minute, average, percentage |
+| `every: 1m` | Check every minute | 1 minute |
+| `warn: $this > 80` | Alert if RAM usage exceeds 80% | 80% |
+| `crit: $this > 90` | Critical if RAM usage exceeds 90% | 90% |
+| `info` | Description shown in notifications | Plain text |
 
-- `alarm: ram_usage` — Names this alert. Using `alarm` (rather than `template`) means it targets the specific chart named `system.ram` on this node.
-- `on: system.ram` — The chart to watch. You can find chart names by hovering over any chart in the dashboard and looking at the tooltip.
-- `lookup: average -1m percentage of used` — Look back 1 minute, calculate the average, express it as a percentage of the "used" portion.
-- `every: 1m` — Evaluate this rule every minute.
-- `warn: $this > 80` — Fire a warning when RAM is above 80%.
-- `crit: $this > 90` — Escalate to critical above 90%.
-- `info` — This text appears in your notifications and on the dashboard.
-
-### Step 3 — Apply and verify
-
+**Step 3:** Apply the changes without restarting Netdata:
 ```bash
 sudo netdatacli reload-health
 ```
 
-Navigate to the Alerts section on your dashboard or in Netdata Cloud. Your new `ram_usage` alert will appear there once it has been evaluated.
+Your new alert will appear in the dashboard within seconds.
 
-### Using Templates to Cover All Instances at Once
+### Alert for All Disks (Using a Template)
 
-If you want one rule to apply to **every disk**, **every network interface**, or every instance of any repeated metric, use `template` instead of `alarm`, and reference the metric's context rather than a specific chart name.
+Templates are powerful because they automatically apply to every matching instance. This example watches all your disks at once:
 
 ```
-template: disk_space_warning
+template: disk_full_percent
       on: disk.space
-  lookup: max -1m percentage of avail
+    calc: $used * 100 / ($avail + $used)
    every: 1m
-    warn: $this < 20
-    crit: $this < 10
-    info: Available disk space is running low.
+    warn: $this > 80
+    crit: $this > 95
+  repeat: warning 120s critical 10s
+    info: Disk space usage percentage.
 ```
 
-This single rule automatically creates an alert for every mounted disk on your system.
+Because this uses `template` and `on: disk.space` (a context, not a specific chart), it automatically monitors every disk — including any you add in the future.
 
 ---
 
-## Customizing Built-in Alerts (Overrides)
+## Adjusting Thresholds and Customizing Built-In Alerts
 
-You do not need to modify stock files to customize their behavior — you can override them by creating a rule with the **same name** in your user configuration folder.
+Netdata's default thresholds are designed for general use. You may need to raise or lower them to match your specific environment.
 
-### Raise Thresholds for All Instances
+### The Safe Way: Override Without Editing Stock Files
 
-To increase the CPU steal threshold for all machines, create a file in `/etc/netdata/health.d/` with the same alert name:
+Create a file in `/etc/netdata/health.d/` with an alert of the **same name** as the stock alert. Netdata processes user files first, so your version takes priority.
 
-```
-template: 20min_steal_cpu
-      on: system.cpu
-  lookup: average -20m unaligned of steal
-   units: %
-   every: 5m
-    warn: $this > (($status >= $WARNING) ? (10) : (20))
-```
+**Example: Raise the CPU usage warning threshold**
 
-Netdata processes your user configurations first, so this version wins. The stock definition is skipped.
+The built-in alert triggers a warning at 85% CPU. To change it to 75%:
+
+1. Create your override file:
+   ```bash
+   sudo ./edit-config health.d/my-overrides.conf
+   ```
+
+2. Copy the alert structure and adjust the thresholds:
+   ```
+   template: 10min_cpu_usage
+         on: system.cpu
+     lookup: average -10m unaligned of user,system,softirq,irq,guest
+      units: %
+      every: 1m
+       warn: $this > (($status >= $WARNING)  ? (60) : (75))
+       crit: $this > (($status == $CRITICAL) ? (75) : (85))
+   ```
+
+3. Reload:
+   ```bash
+   sudo netdatacli reload-health
+   ```
+
+> **Note:** Your override must be a complete alert definition — include all fields like `lookup`, `warn`, `crit`, etc. Omitting a field means that field uses its default value, not the stock value.
 
 ### Override for One Specific Instance
 
-To keep stock thresholds for most disks but use different thresholds for `/mnt/data`:
+If you want different thresholds for just one disk (say `/mnt/data`) while keeping defaults for everything else, use an `alarm` (not a `template`) targeting that specific chart:
 
 ```
 alarm: disk_space_usage
    on: disk_space._mnt_data
-  lookup: max -1m percentage of avail
-    warn: $this < 5
-    crit: $this < 2
+lookup: max -1m percentage of avail
+  warn: $this < 5
+  crit: $this < 2
 ```
 
-The specific chart ID (`disk_space._mnt_data`) means this rule only applies to that one mount point.
+The chart name for a mount point follows the pattern `disk_space.` followed by the path with slashes replaced by underscores.
+
+### Override Per Environment
+
+You can apply different thresholds to different groups of servers using host labels:
+
+```
+# Stricter thresholds for production
+template: 10min_cpu_usage
+      on: system.cpu
+host labels: environment=production
+    warn: $this > 70
+
+# Relaxed thresholds for development
+template: 10min_cpu_usage
+      on: system.cpu
+host labels: environment=development
+    warn: $this > 90
+```
 
 ---
 
-## Silencing Alerts and Managing Alert Noise
+## Silencing Alerts for Maintenance
 
-### Silence Notifications for One Alert
+When you are performing planned maintenance or know that certain alerts are not relevant, you have several options to quiet them.
 
-If you want Netdata to keep checking a metric but stop sending you notifications for it, change the `to:` line in that alert's configuration to `silent`:
-
+### Option 1: Silence Notifications for One Alert (Keep Monitoring)
+Change the `to:` line in the alert's configuration to `silent`. The alert still appears in the dashboard but sends no messages to anyone:
 ```
 to: silent
 ```
+Then reload: `sudo netdatacli reload-health`
 
-Reload health configuration to apply. The alert still appears on the dashboard but generates no notifications.
-
-### Disable Specific Alerts Entirely
-
-Open `/etc/netdata/netdata.conf` and find (or create) the `[health]` section. Use the `enabled alarms` setting with exclusion patterns:
+### Option 2: Disable Specific Alerts Completely
+In your main configuration file (`/etc/netdata/netdata.conf`), use the `enabled alarms` setting in the `[health]` section:
 
 ```ini
 [health]
-    enabled alarms = !oom_kill *
+    enabled alarms = !oom_kill !20min_steal_cpu *
 ```
 
-This loads all alerts **except** `oom_kill`. You can list multiple exclusions:
+The `!` prefix excludes an alert. The `*` at the end means "keep everything else." After editing, restart Netdata.
 
-```ini
-enabled alarms = !oom_kill !disk_space_usage *
-```
-
-### Temporarily Disable All Alerts (Maintenance Mode)
-
-In `/etc/netdata/netdata.conf`:
-
+### Option 3: Disable All Alerts (Maintenance Mode)
+In `/etc/netdata/netdata.conf`, under `[health]`:
 ```ini
 [health]
     enabled = no
 ```
+Restart Netdata to apply. This turns off all health monitoring until you re-enable it.
 
-Restart Netdata to apply. Remember to re-enable and restart when maintenance is done.
-
-### Prevent Alert Noise During Recovery
-
-The `delay` setting stops Netdata from notifying you the moment an alert clears, preventing a storm of "OK" messages after a brief incident:
-
-```
-delay: down 15m multiplier 1.5 max 1h
-```
-
-This waits 15 minutes after recovery before clearing the alert, and multiplies that delay if the alert keeps changing state.
-
-### Reduce Repeated Notifications
-
-The `repeat` setting controls how often Netdata re-notifies you while an alert remains active:
-
-```
-repeat: warning 2m critical 30s
-```
-
-This sends a reminder every 2 minutes for warnings, and every 30 seconds for critical alerts — or set `repeat: off` to stop repeating entirely.
+### Option 4: Temporary Silencing Without Config Changes
+The Netdata health management API allows you to temporarily disable alerts or suppress notifications without touching any files or restarting. This is ideal for short maintenance windows. Changes made through the API are not permanent and do not survive a restart.
 
 ---
 
-## Using the Visual Alert Configuration Manager
+## Viewing and Acknowledging Active Alerts
 
-If you prefer not to edit configuration files manually, Netdata Cloud includes an **Alerts Configuration Manager** — a visual wizard that guides you through setting up alerts.
+### On the Local Dashboard
+The Netdata local dashboard (accessible at `http://your-server:19999`) shows all currently active alerts. Look for the alarm bell icon or the **Alerts** section. Each active alert displays:
+- Its name and the chart it is monitoring
+- Current status (Warning or Critical)
+- The current metric value that triggered it
+- The description from the `info` line
 
-To access it:
-1. Navigate to any chart in the Netdata Cloud dashboard
+### On Netdata Cloud
+If your agents are connected to Netdata Cloud, you can view alerts across your entire infrastructure from a single place:
+
+1. Navigate to the **Alerts** page from the main menu
+2. See all active warnings and critical alerts across every connected node
+3. Filter by node, alert name, severity, or time period
+4. Click any alert to drill into the chart and see the full history of the metric
+
+### Using the Alerts Configuration Manager (Visual UI)
+For users who prefer not to write configuration files, Netdata Cloud includes a visual **Alerts Configuration Manager** that walks you through creating alerts with a point-and-click interface:
+
+1. Navigate to any chart on the Metrics page
 2. Click the alert icon on the chart
 3. Select **Add Alert**
-4. Choose an alert detection type:
-   - **Standard** — triggers when a metric crosses a fixed value
-   - **Metric Variance** — triggers based on how much a metric fluctuates
-   - **Anomaly Rate** — triggers when Netdata's machine learning detects unusual behavior
-5. Set your warning and critical thresholds, check interval, notification delay, and recipients
-6. Name the alert and add a description
-7. Submit — Netdata pushes the configuration to your selected nodes
+4. Set your thresholds, check interval, notification delay, and who to notify
+5. Click **Submit** to deploy the alert to your nodes
+
+The Configuration Manager supports three alert detection styles:
+
+| Style | Best for |
+|-------|----------|
+| **Standard** | Simple threshold-based alerts (metric exceeds a value) |
+| **Metric Variance** | Detecting unusual variation in a metric over time |
+| **Anomaly Rate** | Using Netdata's built-in machine learning to flag unusual behavior |
 
 > **Note:** The Alerts Configuration Manager requires an active Netdata subscription.
 
 ---
 
-## Tips for Reducing Alert Noise
+## Verifying Your Alert Configuration
 
-| Problem | Solution |
-|---|---|
-| Alert fires and clears repeatedly (flapping) | Add a hysteresis buffer using the `? :` pattern in `warn`/`crit`. Require the value to recover further than where it triggered. |
-| Too many notifications when a problem persists | Use `repeat: off` or set a longer repeat interval |
-| Alert triggers on expected spikes | Increase the `lookup` window (e.g., `-5m` instead of `-1m`) so the alert reflects an average, not an instant spike |
-| Irrelevant alerts for your workload | Disable with `enabled alarms = !alert_name *` in `netdata.conf`, or override with higher thresholds |
-| Need silence during scheduled maintenance | Use the Netdata health management API to temporarily disable alerts without changing files |
+After creating or modifying an alert, confirm it is working correctly:
+
+**Check all active alerts via the API:**
+```
+http://your-server:19999/api/v1/alarms?all
+```
+
+**Check available variables for a chart:**
+```
+http://your-server:19999/api/v1/alarm_variables?chart=system.cpu
+```
+
+Replace `system.cpu` with whichever chart your alert monitors. This shows every variable you can use in your `warn`, `crit`, and `calc` lines.
+
+**Verify which config file is active:**
+After reloading, look at the `source` field in the API response for your alert — it confirms whether Netdata is using your override file or the stock definition.
 
 ---
 
-## Quick Reference
+## Quick Reference: Common Alert Tasks
 
-### Alert Configuration Cheat Sheet
-
-```
-# To create an alert:
-alarm: my_alert_name          ← starts the rule (one specific chart)
-template: my_alert_name       ← starts the rule (all matching charts)
-      on: chart.name          ← which metric to watch
-  lookup: average -5m of used ← how to query the data
-   every: 1m                  ← how often to evaluate
-    warn: $this > 80          ← warning condition
-    crit: $this > 95          ← critical condition
-   delay: down 5m             ← wait before clearing
-  repeat: warning 5m          ← how often to re-notify
-      to: sysadmin            ← who gets notified (or: silent)
-    info: What this alert means ← shown in notifications
-```
-
-### Common Commands
-
-```bash
-# Edit a built-in alert file safely
-sudo ./edit-config health.d/cpu.conf
-
-# Apply changes without restarting Netdata
-sudo netdatacli reload-health
-
-# Check what variables are available for a chart
-http://your-server:19999/api/v1/alarm_variables?chart=system.cpu
-
-# See all current alerts and their values
-http://your-server:19999/api/v1/alarms?all
-```
+| Goal | What to do |
+|------|------------|
+| Create a new custom alert | Add a `.conf` file in `/etc/netdata/health.d/` and reload |
+| Change a built-in alert's thresholds | Create an override with the same alert name in `/etc/netdata/health.d/` |
+| Stop notifications for one alert | Set `to: silent` in the alert config and reload |
+| Disable one specific alert | Add `!alert_name` to `enabled alarms` in `netdata.conf` |
+| Disable all alerts temporarily | Set `enabled = no` in the `[health]` section of `netdata.conf` |
+| Apply changes without restarting | Run `sudo netdatacli reload-health` |
+| View all active alerts | Visit the Alerts page on your dashboard or Netdata Cloud |
+| Create an alert across all nodes | Use the Alerts Configuration Manager in Netdata Cloud |

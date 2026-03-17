@@ -1,165 +1,199 @@
 # Understanding the Netdata Architecture
 
-Netdata is built around a simple but powerful idea: **keep your data where it belongs — on your own infrastructure** — while still giving you the visibility, speed, and scale you need to monitor everything. This guide explains the key building blocks of Netdata and how they work together, so you can make informed decisions about how to deploy and use it.
+Netdata is built around a simple idea: monitoring data should stay close to where it's generated, not be shipped to a central location. This guide explains how all the pieces fit together so you can confidently choose the right setup for your environment.
 
 ---
 
 ## The Big Picture
 
-Netdata has three main components that work together:
+Netdata is made up of three main building blocks that work together:
 
-| Component | What It Does |
+| Building Block | What It Does |
 |---|---|
-| **Netdata Agent** | Runs on every machine you want to monitor. Collects metrics, stores them locally, runs machine learning, fires alerts, and serves dashboards. |
-| **Netdata Cloud** | An optional web service that connects your agents together for multi-server views, user management, and remote access — without ever storing your metrics. |
-| **Netdata UI** | The visual dashboard layer, included with every agent and also accessible through Netdata Cloud. |
+| **Netdata Agent** | Runs on each of your servers or devices, collects metrics, stores them locally, and makes them available |
+| **Netdata Cloud** | An optional online service that connects your agents, adds team management features, and provides a unified view — without ever storing your raw metrics |
+| **Netdata UI** | The visual dashboard you use to explore charts, alerts, and data — delivered free and accessible from your browser |
+
+You can use the Agent completely on its own, add Parent nodes for central collection, and optionally connect to Netdata Cloud for remote access and team features. Each layer adds capability without removing your control over your data.
 
 ---
 
-## Inside the Netdata Agent: How Data Flows
+## How the Netdata Agent Works: The Data Pipeline
 
-Every Netdata Agent processes your metrics through a pipeline of nine steps, all happening in real time:
+Every Netdata Agent runs a continuous, nine-step pipeline on your machine:
 
 ```
 Collect → Store → Learn → Detect → Check → Stream → Archive → Query → Score
 ```
 
-Here is what each step means for you:
+Here is what happens at each step:
 
-1. **Collect** — The agent gathers metrics every second from your operating system, applications, containers, logs, network interfaces, hardware sensors, and hundreds of other sources. This happens automatically — no configuration needed for most systems.
+1. **Collect** — Plugins and integrations gather measurements from your operating system, hardware, containers, applications, and services every second.
 
-2. **Store** — Collected metrics are saved to a high-efficiency time-series database running directly on your machine. Storage uses approximately 0.5 bytes per data point, and Netdata automatically manages three tiers of retention:
-   - Every second (highest detail, recent data)
-   - Every minute (medium detail, medium-term history)
-   - Every hour (summary view, long-term history)
+2. **Store** — Those measurements are saved to a high-efficiency, tiered time-series database directly on your machine. Nothing leaves your server at this stage.
 
-3. **Learn** — For every metric being tracked, the agent trains its own machine learning model based on that metric's recent behavior. This training happens at the edge — on your machine — with no data sent anywhere.
+3. **Learn** — The Agent quietly trains machine learning models for each individual metric, based on how that metric normally behaves over time.
 
-4. **Detect** — Using those trained models, the agent continuously evaluates whether current metric values look unusual. Anomalies are flagged automatically without you needing to define thresholds.
+4. **Detect** — The trained models are used to flag unusual patterns automatically — no manual threshold-setting required.
 
-5. **Check** — Alert rules are evaluated against current metric values. Netdata includes hundreds of pre-configured alerts for common problems. When a condition is met, notifications are sent to your chosen channels (email, Slack, PagerDuty, and many others).
+5. **Check** — Every metric is evaluated against pre-built or custom alert rules. When a threshold is crossed, an alert fires.
 
-6. **Stream** — Metrics can be forwarded in real time to a Netdata Parent node (see the next section). This enables centralized storage, longer retention, and unified dashboards across many machines.
+6. **Stream** — Metrics can be forwarded in real time to a designated Parent node (see [Parent-Child topology](#the-parent-child-topology-scaling-across-many-servers) below).
 
-7. **Archive** — Optionally, metrics can be exported to external systems such as Prometheus, InfluxDB, Graphite, or OpenTSDB for integration with other tools.
+7. **Archive** — Optionally, metrics can be sent to external systems like Prometheus, InfluxDB, Graphite, or others you already use.
 
-8. **Query** — The agent exposes a built-in API so its dashboards — and any third-party tool you connect — can retrieve metrics on demand.
+8. **Query** — A built-in API makes all collected data available to the dashboard and any tools you connect.
 
-9. **Score** — A scoring engine finds patterns and correlations across metrics, helping you trace the root cause of a problem without manually comparing charts.
+9. **Score** — A scoring engine finds patterns and correlations across metrics, powering features like anomaly detection and root cause analysis.
 
----
-
-## Parent–Child Streaming: Scaling to Many Machines
-
-For environments with more than a handful of servers, Netdata uses a **Parent–Child** model to centralize visibility without centralizing data collection.
-
-### How it works
-
-- A **Child** agent runs on each machine you want to monitor. It collects metrics locally every second and streams them in real time to a Parent.
-- A **Parent** agent runs on a dedicated, more powerful machine. It receives metrics from many Child agents, stores them, runs alerts, and serves a unified dashboard covering all connected nodes.
-- Parents can themselves stream to other Parents, allowing you to build multi-level hierarchies that scale to any size.
-
-### Why this design matters
-
-- **Your data stays in your infrastructure.** Nothing leaves your network unless you explicitly configure exports.
-- **Child agents have zero overhead for long-term storage.** If you want, a Child can run entirely in memory and rely on the Parent for persistence.
-- **You get a single pane of glass.** One Parent dashboard shows all your connected machines together.
-- **Horizontal scaling is built in.** Add more Parents to handle more nodes, or use Netdata Cloud to unify multiple independent infrastructures into one logical view (see below).
-
-### Typical topologies
-
-| Scenario | Recommended Setup |
-|---|---|
-| Single server | One agent, local dashboard |
-| Small team (2–20 servers) | One Parent, rest as Children |
-| Large organization (hundreds of servers) | Multiple Parents, each serving a group of Children |
-| Multi-region / multi-cloud | Multiple Parent clusters connected via Netdata Cloud |
+All nine steps happen on your own infrastructure. Your raw metric data never leaves your servers unless you explicitly configure it to do so.
 
 ---
 
-## Netdata Cloud: Your Control Plane (Not Your Data Plane)
+## Data Retention: Three Tiers, One Seamless View
 
-Netdata Cloud is a web-based service available at [app.netdata.cloud](https://app.netdata.cloud). It is **completely optional**, but it adds powerful capabilities on top of your local agent deployment.
+The Agent stores your metrics at three levels of detail, automatically:
 
-### What Netdata Cloud does
-
-- Gives you a single sign-on portal to see all your nodes from anywhere, without opening firewall rules or VPN connections
-- Provides multi-node dashboards that let you compare metrics across your entire fleet
-- Manages user access with role-based permissions and team spaces
-- Lets you configure alerts and data collection settings centrally, pushing changes out to agents
-- Offers a free community tier for personal use
-
-### What Netdata Cloud does NOT do
-
-> **Your metric data never passes through Netdata Cloud.**
-
-This is a fundamental design principle. When you view a chart in Netdata Cloud, the dashboard retrieves metric data directly from the agent running on your machine — Netdata Cloud only acts as a coordination layer. It handles authentication, routing your browser to the right agent, and managing your settings, but your actual monitoring data stays on your infrastructure at all times.
-
----
-
-## ACLK: How Agents Securely Talk to Netdata Cloud
-
-When you connect an agent to Netdata Cloud, it establishes a secure outbound connection called the **Agent–Cloud Link (ACLK)**.
-
-Here is what you need to know about it:
-
-- The agent initiates the connection outbound — you do not need to open any inbound ports or change your firewall rules.
-- The connection is encrypted end-to-end.
-- ACLK is used for control messages: authentication, routing, configuration changes, and alert notifications. It is not a data channel.
-- When Netdata Cloud needs to display your metrics, it uses ACLK to instruct your browser to connect directly to your agent for the actual data.
-- If the ACLK connection is interrupted, your agent continues to work normally — local monitoring, alerts, and dashboards are unaffected.
-
-This design means Netdata Cloud acts as a secure switchboard, not a data warehouse.
-
----
-
-## The Plugin System: Where Data Collection Happens
-
-Netdata's breadth of monitoring coverage — over 800 integrations — comes from a flexible plugin system. Plugins are independent programs that collect metrics from specific sources and feed them into the agent.
-
-### Types of plugins
-
-| Plugin Type | What It Covers | Key Characteristics |
+| Tier | Resolution | Ideal For |
 |---|---|---|
-| **Go plugins** | The majority of modern integrations — databases, web servers, message queues, cloud services, and more | Fast, low-overhead, actively developed; includes auto-discovery to find services automatically |
-| **Python plugins** | A large library of legacy and community integrations | Easy to customize and extend |
-| **Bash plugins** | Simple shell-based collectors for quick custom checks | Minimal dependencies, easy to write |
-| **External / native plugins** | Deep OS-level metrics — system resources, network connections, hardware sensors, eBPF tracing | Highest performance; some require elevated permissions for kernel-level access |
+| **Tier 0** | Every second | Investigating problems happening right now |
+| **Tier 1** | Every minute | Trends over hours and days |
+| **Tier 2** | Every hour | Long-term patterns over weeks and months |
 
-### Auto-discovery
-
-The Go plugin layer includes a discovery engine that automatically scans your machine for running services. When it finds something it knows how to monitor (for example, a PostgreSQL database or an Nginx web server), it starts collecting metrics immediately — no manual configuration required. If a service disappears and reappears (common in containerized environments), the agent handles this gracefully.
-
-### Custom integrations
-
-If you need to monitor something Netdata does not cover out of the box, you can write your own plugin in any language. As long as it outputs metrics in the expected format, the agent will collect and display them alongside everything else. Netdata also supports the OpenMetrics format, meaning any Prometheus-compatible exporter can feed data directly into Netdata.
+When you zoom in on a chart, the dashboard automatically uses the most detailed tier available. Zoom out, and it switches to lower-resolution data — all seamlessly, with no action needed from you. The only limit to how long you can keep data is the storage space on your machine.
 
 ---
 
-## Putting It All Together: Deployment Models
+## The Parent-Child Topology: Scaling Across Many Servers
 
-Here is how the architecture plays out in practice depending on your needs:
+When you monitor more than a handful of machines, you can organize your Agents into a **Parent-Child** hierarchy. This is how Netdata scales from a few servers to many thousands.
 
-### Standalone (simplest)
-One agent on one machine. Access the dashboard directly on that machine. No streaming, no cloud connection needed. Good for personal projects or evaluating Netdata.
+### How It Works
 
-### Self-hosted centralized
-Multiple agents (Children) stream to one or more Parent agents you manage. All data stays in your data center or private network. Access dashboards through any Parent agent. Best for teams that want full control with no external dependencies.
+```
+Child Agent (Server A)  ──┐
+Child Agent (Server B)  ──┤──► Parent Node ──► (Optional) Netdata Cloud
+Child Agent (Server C)  ──┘
+```
 
-### Cloud-connected distributed
-Agents connect to Netdata Cloud via ACLK. Netdata Cloud provides the entry point and unified view; your machines serve their own data. Good for remote access and multi-team environments without routing all traffic through a central server.
+- **Child Agents** run on every server you want to monitor. They collect, store, and process metrics locally, then stream a copy to the Parent in real time.
+- **Parent Nodes** are simply Netdata Agents that have been designated to receive streams from other agents. They aggregate metrics from all their children, give you one central dashboard to view everything, and can hold longer-term data retention than individual children.
+- **Multiple levels** are possible — a Parent can itself stream to another Parent, letting you build hierarchies that match your organization's network topology.
 
-### Hybrid
-Large organizations often combine all three: Children stream to regional Parents for local performance, Parents are connected to Netdata Cloud for cross-region visibility and central user management.
+### What This Gives You
+
+- **One dashboard** to see all your servers, without logging into each machine individually.
+- **Longer retention** — the Parent holds historical data, while Agents can run lean with shorter local retention or even no local storage.
+- **Resilience** — Child Agents continue monitoring and storing data locally even if the connection to the Parent is temporarily lost, and they catch up automatically when reconnected.
+- **Alert centralization** — configure alerts in one place on the Parent rather than on every individual server.
+
+This entire streaming happens directly between your own machines, over your own network, with no third-party involvement.
 
 ---
 
-## Key Takeaways
+## Netdata Cloud: Your Control Plane, Not Your Data Plane
 
-- **Every agent is self-sufficient.** It collects, stores, analyzes, and visualizes data entirely on its own.
-- **Streaming is how you scale.** Parent–Child relationships let you centralize dashboards and storage without changing how collection works.
-- **Netdata Cloud is a control plane, not a data store.** Your metrics never leave your infrastructure.
-- **ACLK keeps cloud connectivity simple and secure.** One outbound connection, no inbound ports required.
-- **Plugins are how Netdata knows about everything.** Go, Python, Bash, and native plugins cover over 800 services, and you can add your own.
+Netdata Cloud is an optional online service at [app.netdata.cloud](https://app.netdata.cloud). It is important to understand what it does — and what it does *not* do.
 
-For next steps, explore the [Netdata documentation at learn.netdata.cloud](https://learn.netdata.cloud) for detailed setup guides, streaming configuration, and integration-specific instructions.
+### What Netdata Cloud Does
+
+- Gives you access to your dashboards from any browser, anywhere, without opening firewall ports on each server.
+- Provides a unified view across all your nodes and even multiple separate infrastructures.
+- Manages team access through user accounts and role-based permissions.
+- Lets you configure alerts and data collection settings centrally and push them to your Agents.
+- Offers a free tier and paid plans for enterprise features.
+
+### What Netdata Cloud Does NOT Do
+
+> **Your raw metric data never passes through Netdata Cloud.**
+
+When you view a chart in Netdata Cloud, your browser is actually receiving the data directly from your Agent, via a secure connection. Netdata Cloud coordinates that connection but does not store or process your metrics. This is a fundamental design principle — not just a policy.
+
+This means:
+
+- Your data stays on your infrastructure at all times.
+- You retain full control and full resolution of every metric.
+- There is no per-metric cost based on how much you collect.
+- You can disconnect from Netdata Cloud at any time and your local monitoring continues unaffected.
+
+---
+
+## ACLK: How Agents Securely Connect to Netdata Cloud
+
+When you choose to connect an Agent to Netdata Cloud, the connection is made through the **Agent-Cloud Link (ACLK)** — a secure, outbound-only connection from your Agent to Netdata Cloud.
+
+### Key Properties of ACLK
+
+- **Outbound only**: Your Agent initiates the connection to Netdata Cloud. No inbound ports need to be opened on your firewall or network.
+- **Encrypted**: All communication over ACLK is encrypted in transit.
+- **Control messages only**: The ACLK carries commands, configuration, and connection-brokering information — not your actual metrics data.
+- **Optional**: If you do not connect to Netdata Cloud, ACLK is simply not used. Your Agent operates entirely on its local network.
+
+Think of ACLK as a secure telephone line between your Agent and Netdata Cloud — it lets the two talk to each other and coordinate, while your actual metric data travels through a separate, direct connection between your browser and your server.
+
+---
+
+## The Plugin System: How Netdata Collects Everything
+
+Netdata's ability to monitor hundreds of different technologies comes from its plugin architecture. Instead of one monolithic collector, Netdata uses a family of plugins — each specialized for different types of data sources.
+
+### Plugin Families
+
+| Plugin Type | What It Monitors | How It Works |
+|---|---|---|
+| **Go plugins** | Modern applications and services (databases, web servers, cloud services, and many more) | High-performance collectors built into the main Netdata package, auto-discovering services as they appear |
+| **Python plugins** | A wide range of applications and custom integrations | Interpreted scripts that communicate with Netdata through a defined protocol |
+| **Bash plugins (Shell scripts)** | Simple checks, custom scripts, and lightweight integrations | Shell-based collectors that are easy to write and customize |
+| **External plugins** | Anything else — hardware, proprietary systems, custom applications | Any program in any language that follows Netdata's plugin communication protocol |
+
+### Auto-Discovery
+
+A key feature of the plugin system is that it is largely automatic. When Netdata starts (and continuously while it is running), it scans your system to find what services and applications are present. If it detects a running database, web server, container, or other supported technology, it automatically begins collecting metrics from it — no manual configuration needed in most cases.
+
+This discovery continues while Netdata is running, so when you start a new container or install a new service, Netdata typically begins monitoring it within seconds.
+
+### What Plugins Can Monitor
+
+Through its plugin system, Netdata covers:
+
+- **System resources**: CPU, memory, disk, network interfaces, and hardware sensors
+- **Containers and orchestration**: Docker, containerd, Kubernetes, LXC/LXD
+- **Databases**: PostgreSQL, MySQL, MongoDB, Redis, and many more
+- **Web servers and proxies**: nginx, Apache, HAProxy, and others
+- **Cloud provider infrastructure**: AWS, GCP, Azure services
+- **Custom metrics**: Via OpenMetrics (Prometheus-compatible), StatsD, and custom integrations
+- **Logs**: System journal and Windows Event Logs, processed and visualized directly
+- **Synthetic checks**: HTTP endpoint testing, TCP port checks, SSL certificate expiry, and ping
+
+---
+
+## Deployment Models: Choosing What Works for You
+
+Based on the architecture above, you can deploy Netdata in several ways depending on your needs:
+
+### Single Node (Standalone)
+Install one Agent on a server and access its dashboard directly. Everything runs locally. Ideal for getting started, monitoring a single machine, or air-gapped environments.
+
+### Multi-Node with Parents
+Install Agents on all your servers and designate one or more powerful machines as Parent nodes. Agents stream to the Parents, giving you a central dashboard and longer data retention — all within your own network.
+
+### Connected to Netdata Cloud
+Connect your Agents (or your Parents) to Netdata Cloud. You gain remote access from anywhere, team collaboration, role-based access control, and cross-infrastructure dashboards. Your data still lives on your machines.
+
+### All Three Together
+The most complete setup: Agents on every server, streaming to Parents for local centralization, with Netdata Cloud providing remote access and team management on top.
+
+---
+
+## Summary
+
+| Concept | Key Takeaway |
+|---|---|
+| **Agent pipeline** | Collect → Store → Learn → Detect → Check → Stream → Archive → Query → Score — all on your machine |
+| **Tiered storage** | Three resolution tiers, automatically used based on how far you zoom out |
+| **Parent-Child topology** | Agents stream to Parent nodes for scalable, centralized monitoring within your network |
+| **Netdata Cloud** | Controls and connects — never stores your metric data |
+| **ACLK** | Secure, outbound-only link for Agent-to-Cloud communication; no inbound firewall changes needed |
+| **Plugin system** | Go, Python, bash, and external plugins auto-discover and monitor hundreds of technologies |
+
+For full documentation, guides, and configuration references, visit [Netdata Learn](https://learn.netdata.cloud).

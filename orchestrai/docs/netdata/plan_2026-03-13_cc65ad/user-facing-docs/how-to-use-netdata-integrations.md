@@ -2,174 +2,161 @@
 
 ## What Are Netdata Integrations?
 
-An integration is a ready-made connection between Netdata and a specific technology or service. Instead of building monitoring from scratch, you simply enable the relevant integration and Netdata starts collecting, displaying, and alerting on data right away.
+Integrations are ready-made connections between Netdata and the tools, services, and systems you already run. Instead of building monitoring from scratch, you simply enable the integration for your technology and Netdata automatically starts collecting data, building dashboards, and running anomaly detection — no query language or manual dashboard setup required.
 
 Netdata organizes integrations into four main types:
 
-| Type | What It Does |
-|------|-------------|
-| **Collectors** | Gather metrics from your systems, applications, and services |
-| **Exporters** | Send your collected metrics to external storage or analytics tools |
-| **Notification Agents** | Deliver alerts to messaging and incident management platforms |
-| **Authentication** | Connect Netdata Cloud sign-in to your identity provider |
+| Integration Type | What It Does |
+|---|---|
+| **Data Collectors** | Gather metrics from your systems, applications, and services |
+| **Exporters** | Send Netdata metrics to external time-series databases (e.g., Prometheus, InfluxDB) |
+| **Notification Agents** | Deliver alerts to your team via Slack, PagerDuty, email, and 20+ other platforms |
+| **Authentication Providers** | Connect Netdata Cloud login to your organization's identity provider (e.g., Okta, OIDC) |
 
 ---
 
 ## Browsing Available Integrations
 
-### The Integrations Catalog
-
-The easiest way to explore all available integrations is to visit **[integrations.netdata.cloud](https://integrations.netdata.cloud)**. This searchable catalog lists every integration Netdata supports, organized by category.
-
-You can also browse integrations directly from the **Integrations** section inside the Netdata Cloud dashboard.
+The complete, searchable catalog of all Netdata integrations is available at **[integrations.netdata.cloud](https://integrations.netdata.cloud)**. You can browse and filter by category without needing to install anything first.
 
 ### Integration Categories
 
-Integrations are organized into the following main categories, making it easy to find what you need:
+Integrations are organized into logical groups to help you find what you need quickly:
 
-**Data Collection (Collectors)**
-- **Databases** — MySQL, PostgreSQL, MongoDB, Redis, and many more
-- **Web Servers and Proxies** — Nginx, Apache, HAProxy, Traefik, and others
-- **Containers and VMs** — Docker, Kubernetes, LXC, and similar platforms
-- **Operating Systems** — Linux, Windows, macOS system metrics
-- **Networking** — Network interfaces, firewall stats, DNS, and more
-- **Cloud and DevOps** — AWS, GCP, Azure, CI/CD tools, and cloud services
-- **Hardware and Sensors** — CPU, memory, disk, temperature, and power sensors
-- **Applications** — Business and productivity applications
-- **Storage and Filesystems** — Disk usage, RAID, NFS, and storage systems
-- **Synthetic Testing** — HTTP checks, port probes, and uptime monitors
-- **Logs** — Log monitoring across your infrastructure
+**Data Collection**
+- Databases
+- Web Servers and Proxies
+- Containers and VMs
+- Operating Systems
+- Networking
+- Cloud and DevOps
+- Hardware and Sensors
+- Applications
+- Storage and Filesystems
+- Synthetic Testing (uptime and connectivity checks)
+
+**Logs**
+Monitoring and querying logs from your infrastructure.
 
 **Exporters**
-Send your metrics data to external systems such as Prometheus, Graphite, InfluxDB, or other time-series databases for long-term storage or integration with other dashboards.
+Sending your Netdata metrics to external tools like Prometheus, Graphite, InfluxDB, and OpenTSDB.
 
 **Notifications**
-- **Agent Dispatched Notifications** — Alerts sent directly from your Netdata agent (e.g., email, PagerDuty, Slack, Teams, Opsgenie, Telegram, and many more)
-- **Centralized Cloud Notifications** — Alerts managed and delivered through Netdata Cloud
+Routing alerts to platforms such as Slack, PagerDuty, email, and webhooks.
 
-**Deploy Integrations**
-Step-by-step guidance for installing Netdata on various platforms, including operating systems, Docker and Kubernetes, and provisioning tools like Ansible.
+**Authentication**
+Connecting cloud login to your organization's identity provider.
 
 ---
 
-## Understanding Integration Types in Detail
+## Understanding Integration Types
 
-### Collectors
-Collectors are the heart of Netdata's monitoring capabilities. They connect to a service or read system data and pull metrics at regular intervals — by default, every second. Most collectors work automatically: as soon as Netdata detects that a supported service is running (for example, Nginx or MySQL), it starts collecting data with zero manual configuration.
+### Data Collectors
+Collectors are the heart of Netdata's integrations library. Each collector monitors a specific application or system component — for example, there are dedicated collectors for MySQL, PostgreSQL, Redis, Nginx, Apache, Kubernetes, Docker, and hundreds more.
 
-**Key things to know:**
-- Many collectors are **auto-detected** — Netdata finds and monitors your services automatically upon startup
-- Each collector page in the catalog describes exactly what metrics are collected and what pre-built alerts come with it
-- Some collectors require minimal setup, such as providing a username and password for a database
+Key things to know about collectors:
+- **Many collectors work automatically** — once Netdata detects a running service on your system, the relevant collector activates without any extra steps.
+- **Some collectors need credentials** — for protected applications like databases, you provide connection details so Netdata can access performance data.
+- **Each collector comes with pre-built dashboards and alerts** — as soon as it starts collecting, you get visualizations and hundreds of pre-configured alert rules right away.
+- **Collectors run per-second** — data is refreshed every second, giving you real-time visibility into what's happening right now.
 
 ### Exporters
-Exporters let you send a copy of your metrics to another system. This is useful if your organization already uses a tool like Prometheus, Graphite, OpenTSDB, or InfluxDB and wants Netdata's high-resolution data there too. Enabling an exporter does not affect normal Netdata monitoring — it runs alongside it.
+If you already use a time-series database like Prometheus, InfluxDB, Graphite, or OpenTSDB, exporters let you forward Netdata's collected metrics to those systems. This means Netdata enhances your existing observability stack rather than replacing it.
 
 ### Notification Agents
-When Netdata detects a problem — such as high CPU usage or a service going down — it fires an alert. Notification integrations determine *where* that alert goes. Supported destinations include:
+When Netdata detects a problem and fires an alert, notification integrations determine where that alert goes. Supported destinations include:
+- **Messaging platforms**: Slack, Microsoft Teams, Discord, Telegram
+- **Incident management**: PagerDuty, Opsgenie, VictorOps
+- **Email**: Standard SMTP email delivery
+- **Custom webhooks**: Send alerts to any endpoint you control
 
-- **Slack** and **Microsoft Teams** for team chat
-- **PagerDuty** and **Opsgenie** for on-call incident management
-- **Email** for direct delivery
-- **Telegram**, **Discord**, **Twilio (SMS)**, and many others
+There are two notification paths:
+- **Agent Dispatched Notifications** — alerts sent directly from the Netdata Agent running on your server
+- **Centralized Cloud Notifications** — alerts routed through Netdata Cloud, giving your whole team a single unified alert stream
 
----
-
-## Enabling an Integration for Your Technology Stack
-
-### Step 1: Find the Right Integration
-
-1. Go to **[integrations.netdata.cloud](https://integrations.netdata.cloud)** or open the **Integrations** page in Netdata Cloud.
-2. Search by name (e.g., "PostgreSQL", "Nginx", "Slack") or browse by category.
-3. Click on an integration to open its detail page.
-
-### Step 2: Read the Integration Page
-
-Each integration page tells you:
-- **What it monitors** — a list of all metrics and charts you'll get
-- **Prerequisites** — anything your service needs to have enabled (e.g., a stats endpoint, a read-only database user)
-- **How to enable it** — step-by-step setup instructions
-- **Built-in alerts** — which alert conditions come pre-configured
-
-### Step 3: Enable Auto-Detection (Most Common Path)
-
-For the majority of data collection integrations, **no action is needed**. When Netdata starts, it automatically scans your system for running services it recognizes. If it finds Nginx running, it monitors Nginx. If it finds Redis, it monitors Redis.
-
-To confirm auto-detection worked:
-1. Open your Netdata dashboard.
-2. Navigate to the **Overview** or **Nodes** section.
-3. Look for charts named after your service — if they appear, the integration is active.
-
-### Step 4: Manual Setup (When Required)
-
-Some integrations need a small amount of configuration — for example, telling Netdata the address of a remote database or providing credentials. The integration's detail page provides exact instructions. Generally, you will:
-
-1. Open the relevant settings on your Netdata agent.
-2. Add or edit the configuration for that specific integration.
-3. Restart or reload Netdata to apply the changes.
-
-The integration page always specifies the exact settings to change and what values to use.
+### Authentication Providers
+For teams using Netdata Cloud, authentication integrations connect your organization's existing login system (such as Okta or any OIDC-compatible provider) so your colleagues can sign in with their existing company credentials.
 
 ---
 
-## Integration-Specific Configuration Options
+## Finding the Right Integration for Your Stack
 
-Each integration has its own set of options tailored to that technology. Common configuration options you'll encounter include:
-
-| Option Type | Examples |
-|-------------|---------|
-| **Connection settings** | Host address, port number, socket path |
-| **Authentication** | Username, password, API key, or token |
-| **Collection interval** | How frequently metrics are gathered |
-| **Filtering** | Which databases, instances, or endpoints to include or exclude |
-| **TLS/SSL settings** | Certificate paths for secure connections |
-
-Always refer to the specific integration's page on the catalog for its full list of options and default values. Each page explains what every option does in plain language.
+1. **Visit [integrations.netdata.cloud](https://integrations.netdata.cloud)** and use the search bar or browse by category.
+2. **Click on any integration** to open its dedicated page, which includes:
+   - A description of what the integration monitors or does
+   - Prerequisites (e.g., minimum software versions)
+   - Step-by-step setup instructions
+   - A list of every metric collected and every alert included
+3. **Check the "Deploy" section** of the catalog if you're looking for guidance on installing Netdata itself on a specific operating system, container environment, or provisioning system (such as Ansible or Chef).
 
 ---
 
-## Notification Setup: Getting Alerts to the Right Place
+## Enabling a Data Collector
 
-To set up a notification integration:
+Most collectors are bundled with Netdata and activate automatically. Here is the general process:
 
-1. Go to your **Netdata Cloud** account and navigate to **Alerts & Notifications** settings.
-2. Select the notification service you want to use (e.g., Slack, PagerDuty, Email).
-3. Follow the on-screen steps — you'll typically need to provide a webhook URL or API key from the target service.
-4. Choose which alert severity levels trigger a notification (e.g., Critical only, or Warning and Critical).
-5. Save your settings. Netdata will send a test notification so you can confirm it's working.
+### Step 1 — Install Netdata on Your System
+Netdata must be running on the same machine (or network-accessible location) as the service you want to monitor. Follow the installation guide at **[netdata.cloud](https://www.netdata.cloud)** for your operating system.
+
+### Step 2 — Let Auto-Discovery Run
+After installation, Netdata scans for running services. If it finds a supported application — a web server, database, cache, and so on — it automatically activates the matching collector. Check your dashboard to see if metrics are already appearing.
+
+### Step 3 — Configure Credentials (If Required)
+For protected services such as databases, Netdata needs access credentials. Each integration's page on **integrations.netdata.cloud** provides exact instructions for your specific technology, including what permissions to grant and where to enter connection details.
+
+### Step 4 — Verify Collection
+Once configured, navigate to your Netdata dashboard. You should see a new section populated with charts for the service you just connected. If data isn't appearing, the integration page includes a troubleshooting section to help diagnose common issues.
 
 ---
 
-## Exporter Setup: Sending Metrics Elsewhere
+## Setting Up Notification Integrations
 
-To send your metrics to an external system:
+To receive alerts when something goes wrong:
 
-1. Open the **Integrations** catalog and browse the **Exporters** section.
-2. Select the exporter for your target system (e.g., Prometheus, Graphite, InfluxDB).
-3. Follow the integration page's instructions to enable the exporter on your Netdata agent.
-4. Provide the destination address and any authentication details required by the external system.
-5. Verify the connection by checking that data appears in your external tool.
+1. Go to your **Netdata Cloud** account and open **Alert Notifications** settings (accessible from your Space settings).
+2. Select the notification channel you want to add (Slack, PagerDuty, email, webhook, etc.).
+3. Follow the on-screen steps to connect your account — this typically involves generating an API key or webhook URL in the destination service and pasting it into Netdata.
+4. Choose which alert severity levels trigger notifications and which Spaces or nodes they apply to.
+
+For agent-level notifications (sent directly from a server without going through Netdata Cloud), each integration page provides the configuration details for your chosen platform.
+
+---
+
+## Setting Up Exporter Integrations
+
+To forward metrics to an external database:
+
+1. Find your target system (Prometheus, InfluxDB, Graphite, etc.) in the **Exporters** section of **integrations.netdata.cloud**.
+2. Follow the setup instructions on that integration's page to configure the connection on your Netdata Agent.
+3. Netdata will begin streaming metrics to your external system alongside its normal local storage — your existing dashboards and tooling continue working without interruption.
 
 ---
 
 ## Requesting or Contributing a New Integration
 
-### Don't See What You Need?
+If Netdata doesn't yet support a technology you use, there are two paths:
 
-If a technology you use isn't in the catalog yet, you have two options:
+### Request an Integration
+Open a feature request on the **[Netdata GitHub repository](https://github.com/netdata/netdata/issues)**. Describe the technology you want monitored and how it exposes performance data. The Netdata team and community actively review these requests.
 
-**Request an integration**
-Open a feature request on the [Netdata GitHub repository](https://github.com/netdata/netdata/issues). Describe what you'd like monitored and why. The Netdata team reviews community requests regularly and prioritizes based on demand.
+### Contribute an Integration
+Netdata is open source and welcomes community contributions. If you want to build a new collector, notification channel, or exporter, the **Developer and Contributor Corner** section of the Netdata documentation walks you through the process. New integrations follow a standard format with defined schemas and templates that guide you from start to finish.
 
-**Contribute an integration**
-Netdata is open source and welcomes community contributions. The repository includes templates and schemas that define the standard format for integration metadata. If you're comfortable building a collector or integration, the [developer and contributor corner](https://github.com/netdata/netdata/tree/master/docs/developer-and-contributor-corner) in the documentation explains the process, and the `integrations/` directory in the repository contains all the tooling needed to build and validate a new integration.
+The community's contributions are how the library has grown to 800+ integrations, and every new addition benefits the entire Netdata user base.
 
 ---
 
 ## Tips for Getting the Most from Integrations
 
-- **Start with auto-detection** — install Netdata and check what it discovered automatically before configuring anything manually.
-- **Check the built-in alerts** — every integration comes with carefully tuned alert thresholds so you get meaningful warnings without noise.
-- **Use the catalog search** — if you're looking for a specific tool, searching by name on the integrations catalog is the fastest way to find it.
-- **Layer your integrations** — use collectors to gather data, notification agents to route alerts, and exporters if you need long-term metric storage outside Netdata.
-- **Revisit after upgrades** — new integrations are added frequently. Check the catalog after updating Netdata to discover newly supported technologies.
+- **Start with auto-discovery**: Install Netdata and let it detect what's running first — you may find most of your stack is already covered without any manual configuration.
+- **Check the alerts that come with each integration**: Every data collector ships with pre-configured alerts tuned to that specific technology. Review them so you know what conditions will trigger a notification.
+- **Use Netdata Cloud for a unified view**: When you have integrations running on multiple servers, Netdata Cloud brings all of their data into a single dashboard so you can monitor your entire infrastructure in one place.
+- **Combine with anomaly detection**: Because Netdata runs machine learning on every collected metric automatically, enabling a new integration immediately gives you anomaly detection for that technology — no additional setup required.
+
+---
+
+## Further Reading
+
+- **[integrations.netdata.cloud](https://integrations.netdata.cloud)** — Full integration catalog
+- **[netdata.cloud](https://www.netdata.cloud)** — Installation guides and product documentation
+- **[GitHub repository](https://github.com/netdata/netdata)** — Source code, issue tracker, and contribution guides
